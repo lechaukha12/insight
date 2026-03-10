@@ -1,0 +1,386 @@
+"""
+Insight Linux Agent - System Resource Monitoring Agent
+
+Monitors Linux server resources and sends data to Insight Core API:
+- CPU usage (total + per-core)
+- Memory usage (total, used, available)
+- Disk usage (per mount point)
+- Load average
+- Network I/O
+- Uptime
+- Process count
+
+Supports two modes:
+1. Real-time monitoring (every SCAN_INTERVAL seconds)
+2. Daily comprehensive scan for report generation
+"""
+
+import json
+import logging
+import os
+import platform
+import socket
+import sys
+import time
+from datetime import datetime, timezone, timedelta
+
+import requests
+
+# ─── Configuration ───
+
+CORE_API_URL = os.getenv("INSIGHT_CORE_URL", "http://localhost:8080")
+API_KEY = os.getenv("INSIGHT_API_KEY", "insight-secret-key")
+AGENT_ID = os.getenv("AGENT_ID", f"linux-agent-{socket.gethostname()}")
+AGENT_NAME = os.getenv("AGENT_NAME", f"Linux Agent ({socket.gethostname()})")
+SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "30"))
+DAILY_SCAN_HOUR = int(os.getenv("DAILY_SCAN_HOUR", "0"))
+DAILY_SCAN_MINUTE = int(os.getenv("DAILY_SCAN_MINUTE", "45"))
+
+# Thresholds for alerts
+CPU_THRESHOLD = float(os.getenv("CPU_THRESHOLD", "90"))
+MEMORY_THRESHOLD = float(os.getenv("MEMORY_THRESHOLD", "90"))
+DISK_THRESHOLD = float(os.getenv("DISK_THRESHOLD", "95"))
+
+# Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("insight.linux-agent")
+
+# Import psutil
+try:
+    import psutil
+except ImportError:
+    logger.error("psutil not installed. Install with: pip install psutil")
+    sys.exit(1)
+
+
+# ─── Core API Communication ───
+
+
+def send_to_core(endpoint: str, data: dict) -> bool:
+    url = f"{CORE_API_URL}{endpoint}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": API_KEY,
+    }
+    try:
+        resp = requests.post(url, json=data, headers=headers, timeout=30)
+        if resp.status_code < 300:
+            logger.info(f"Sent to {endpoint}: {resp.json()}")
+            return True
+        else:
+            logger.error(f"Failed to send to {endpoint}: {resp.status_code} - {resp.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Connection to core failed: {e}")
+        return False
+
+
+def send_heartbeat():
+    send_to_core(f"/api/v1/agents/{AGENT_ID}/heartbeat", {})
+
+
+# ─── System Metrics Collection ───
+
+
+def collect_cpu_metrics() -> list[dict]:
+    """Collect CPU usage metrics."""
+    metrics = []
+    hostname = socket.gethostname()
+    labels = {"host": hostname}
+
+    # Overall CPU percent
+    cpu_percent = psutil.cpu_percent(interval=1)
+    metrics.append({
+        "metric_name": "cpu_percent",
+        "metric_value": cpu_percent,
+        "labels": labels,
+    })
+
+    # Per-core usage
+    per_core = psutil.cpu_percent(interval=0.5, percpu=True)
+    for i, core_pct in enumerate(per_core):
+        metrics.append({
+            "metric_name": "cpu_core_percent",
+            "metric_value": core_pct,
+            "labels": {**labels, "core": str(i)},
+        })
+
+    # CPU count
+    metrics.append({
+        "metric_name": "cpu_count",
+        "metric_value": float(psutil.cpu_count()),
+        "labels": labels,
+    })
+
+    # Load average (Unix only)
+    try:
+        load1, load5, load15 = os.getloadavg()
+        metrics.extend([
+            {"metric_name": "load_avg_1m", "metric_value": load1, "labels": labels},
+            {"metric_name": "load_avg_5m", "metric_value": load5, "labels": labels},
+            {"metric_name": "load_avg_15m", "metric_value": load15, "labels": labels},
+        ])
+    except (OSError, AttributeError):
+        pass  # Not available on all systems
+
+    return metrics
+
+
+def collect_memory_metrics() -> list[dict]:
+    """Collect memory usage metrics."""
+    metrics = []
+    hostname = socket.gethostname()
+    labels = {"host": hostname}
+
+    mem = psutil.virtual_memory()
+    metrics.extend([
+        {"metric_name": "memory_total_bytes", "metric_value": float(mem.total), "labels": labels},
+        {"metric_name": "memory_used_bytes", "metric_value": float(mem.used), "labels": labels},
+        {"metric_name": "memory_available_bytes", "metric_value": float(mem.available), "labels": labels},
+        {"metric_name": "memory_percent", "metric_value": mem.percent, "labels": labels},
+    ])
+
+    # Swap
+    swap = psutil.swap_memory()
+    metrics.extend([
+        {"metric_name": "swap_total_bytes", "metric_value": float(swap.total), "labels": labels},
+        {"metric_name": "swap_used_bytes", "metric_value": float(swap.used), "labels": labels},
+        {"metric_name": "swap_percent", "metric_value": swap.percent, "labels": labels},
+    ])
+
+    return metrics
+
+
+def collect_disk_metrics() -> list[dict]:
+    """Collect disk usage metrics for all mount points."""
+    metrics = []
+    hostname = socket.gethostname()
+
+    partitions = psutil.disk_partitions()
+    for partition in partitions:
+        # Skip special filesystems
+        if partition.fstype in ("squashfs", "tmpfs", "devtmpfs", "overlay"):
+            continue
+        try:
+            usage = psutil.disk_usage(partition.mountpoint)
+            labels = {
+                "host": hostname,
+                "mountpoint": partition.mountpoint,
+                "device": partition.device,
+                "fstype": partition.fstype,
+            }
+            metrics.extend([
+                {"metric_name": "disk_total_bytes", "metric_value": float(usage.total), "labels": labels},
+                {"metric_name": "disk_used_bytes", "metric_value": float(usage.used), "labels": labels},
+                {"metric_name": "disk_free_bytes", "metric_value": float(usage.free), "labels": labels},
+                {"metric_name": "disk_percent", "metric_value": usage.percent, "labels": labels},
+            ])
+        except (PermissionError, OSError):
+            continue
+
+    # Disk I/O
+    try:
+        disk_io = psutil.disk_io_counters()
+        if disk_io:
+            labels = {"host": hostname}
+            metrics.extend([
+                {"metric_name": "disk_read_bytes_total", "metric_value": float(disk_io.read_bytes), "labels": labels},
+                {"metric_name": "disk_write_bytes_total", "metric_value": float(disk_io.write_bytes), "labels": labels},
+            ])
+    except Exception:
+        pass
+
+    return metrics
+
+
+def collect_network_metrics() -> list[dict]:
+    """Collect network I/O metrics."""
+    metrics = []
+    hostname = socket.gethostname()
+    labels = {"host": hostname}
+
+    try:
+        net_io = psutil.net_io_counters()
+        metrics.extend([
+            {"metric_name": "network_bytes_sent", "metric_value": float(net_io.bytes_sent), "labels": labels},
+            {"metric_name": "network_bytes_recv", "metric_value": float(net_io.bytes_recv), "labels": labels},
+            {"metric_name": "network_packets_sent", "metric_value": float(net_io.packets_sent), "labels": labels},
+            {"metric_name": "network_packets_recv", "metric_value": float(net_io.packets_recv), "labels": labels},
+            {"metric_name": "network_errors_in", "metric_value": float(net_io.errin), "labels": labels},
+            {"metric_name": "network_errors_out", "metric_value": float(net_io.errout), "labels": labels},
+        ])
+    except Exception:
+        pass
+
+    return metrics
+
+
+def collect_system_info() -> list[dict]:
+    """Collect general system info metrics."""
+    metrics = []
+    hostname = socket.gethostname()
+    labels = {"host": hostname}
+
+    # Uptime
+    boot_time = psutil.boot_time()
+    uptime_seconds = time.time() - boot_time
+    metrics.append({
+        "metric_name": "uptime_seconds",
+        "metric_value": uptime_seconds,
+        "labels": {**labels, "os": platform.system(), "release": platform.release()},
+    })
+
+    # Process count
+    metrics.append({
+        "metric_name": "process_count",
+        "metric_value": float(len(psutil.pids())),
+        "labels": labels,
+    })
+
+    return metrics
+
+
+# ─── Alert Logic ───
+
+
+def check_thresholds(metrics: list[dict]) -> list[dict]:
+    """Check metrics against thresholds and generate alert events."""
+    events = []
+    hostname = socket.gethostname()
+
+    for m in metrics:
+        name = m.get("metric_name", "")
+        value = m.get("metric_value", 0)
+        labels = m.get("labels", {})
+
+        if name == "cpu_percent" and value > CPU_THRESHOLD:
+            events.append({
+                "level": "critical" if value > CPU_THRESHOLD + 5 else "error",
+                "title": f"CPU usage cao: {value:.1f}%",
+                "message": f"Server {hostname}: CPU = {value:.1f}% (ngưỡng: {CPU_THRESHOLD}%)",
+                "source": f"linux/{hostname}",
+                "resource": hostname,
+            })
+
+        elif name == "memory_percent" and value > MEMORY_THRESHOLD:
+            events.append({
+                "level": "critical" if value > MEMORY_THRESHOLD + 5 else "error",
+                "title": f"Memory usage cao: {value:.1f}%",
+                "message": f"Server {hostname}: RAM = {value:.1f}% (ngưỡng: {MEMORY_THRESHOLD}%)",
+                "source": f"linux/{hostname}",
+                "resource": hostname,
+            })
+
+        elif name == "disk_percent" and value > DISK_THRESHOLD:
+            mountpoint = labels.get("mountpoint", "/")
+            events.append({
+                "level": "critical" if value > DISK_THRESHOLD + 2 else "error",
+                "title": f"Disk usage cao: {mountpoint} = {value:.1f}%",
+                "message": f"Server {hostname}: Disk {mountpoint} = {value:.1f}% (ngưỡng: {DISK_THRESHOLD}%)",
+                "source": f"linux/{hostname}",
+                "resource": hostname,
+            })
+
+    return events
+
+
+# ─── Main Loop ───
+
+
+def run_scan():
+    """Run a full metric scan and send to core."""
+    logger.info("Starting scan...")
+
+    all_metrics = []
+    all_metrics.extend(collect_cpu_metrics())
+    all_metrics.extend(collect_memory_metrics())
+    all_metrics.extend(collect_disk_metrics())
+    all_metrics.extend(collect_network_metrics())
+    all_metrics.extend(collect_system_info())
+
+    # Check thresholds
+    events = check_thresholds(all_metrics)
+
+    # Send metrics
+    if all_metrics:
+        send_to_core("/api/v1/metrics", {
+            "agent_id": AGENT_ID,
+            "agent_name": AGENT_NAME,
+            "agent_type": "linux",
+            "hostname": socket.gethostname(),
+            "metrics": all_metrics,
+        })
+
+    # Send error events
+    if events:
+        send_to_core("/api/v1/events", {
+            "agent_id": AGENT_ID,
+            "agent_name": AGENT_NAME,
+            "agent_type": "linux",
+            "hostname": socket.gethostname(),
+            "events": events,
+        })
+
+    # Heartbeat
+    send_heartbeat()
+
+    logger.info(f"Scan complete: {len(all_metrics)} metrics, {len(events)} events")
+
+
+def run_daily_scan():
+    """Full comprehensive scan for daily report."""
+    logger.info("Running daily comprehensive scan...")
+    run_scan()
+
+    # Trigger report
+    send_to_core("/api/v1/reports/generate", {
+        "report_type": "daily",
+        "channels": ["telegram"],
+    })
+    logger.info("Daily scan complete, report triggered")
+
+
+def check_daily_schedule():
+    now = datetime.now(timezone.utc)
+    return now.hour == DAILY_SCAN_HOUR and now.minute == DAILY_SCAN_MINUTE
+
+
+def main():
+    logger.info(f"Insight Linux Agent starting...")
+    logger.info(f"   Agent ID: {AGENT_ID}")
+    logger.info(f"   Hostname: {socket.gethostname()}")
+    logger.info(f"   OS: {platform.system()} {platform.release()}")
+    logger.info(f"   Core URL: {CORE_API_URL}")
+    logger.info(f"   Scan Interval: {SCAN_INTERVAL}s")
+    logger.info(f"   Thresholds: CPU={CPU_THRESHOLD}%, RAM={MEMORY_THRESHOLD}%, Disk={DISK_THRESHOLD}%")
+
+    daily_done_today = False
+    last_scan_day = None
+
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            today = now.date()
+
+            if last_scan_day != today:
+                daily_done_today = False
+                last_scan_day = today
+
+            if check_daily_schedule() and not daily_done_today:
+                run_daily_scan()
+                daily_done_today = True
+            else:
+                run_scan()
+
+        except Exception as e:
+            logger.error(f"Scan error: {e}", exc_info=True)
+
+        time.sleep(SCAN_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()

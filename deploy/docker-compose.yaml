@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # ─── Core API Gateway ───
+  api-gateway:
+    build:
+      context: ../core
+      dockerfile: Dockerfile
+    container_name: insight-api
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=/data/insight.db
+      - INSIGHT_API_KEY=insight-secret-key
+    volumes:
+      - insight-data:/data
+    restart: unless-stopped
+    networks:
+      - insight-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ─── Dashboard ───
+  dashboard:
+    build:
+      context: ../dashboard
+      dockerfile: Dockerfile
+    container_name: insight-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://api-gateway:8080
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+    networks:
+      - insight-net
+
+  # ─── K8s Agent ───
+  k8s-agent:
+    build:
+      context: ../agents/k8s-agent
+      dockerfile: Dockerfile
+    container_name: insight-k8s-agent
+    environment:
+      - INSIGHT_CORE_URL=http://api-gateway:8080
+      - INSIGHT_API_KEY=insight-secret-key
+      - AGENT_ID=k8s-agent-minikube
+      - AGENT_NAME=K8s Agent (Minikube)
+      - CLUSTER_NAME=minikube
+      - SCAN_INTERVAL=30
+      - TARGET_NAMESPACES=all
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+    networks:
+      - insight-net
+
+volumes:
+  insight-data:
+
+networks:
+  insight-net:
+    driver: bridge

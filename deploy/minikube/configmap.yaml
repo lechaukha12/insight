@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: insight-config
+  namespace: insight-system
+data:
+  # ─── API Gateway ───
+  PORT: "8080"
+  DATABASE_URL: "/data/insight.db"
+  INSIGHT_API_KEY: "insight-secret-key"
+
+  # ─── K8s Agent ───
+  AGENT_ID: "k8s-agent-cluster1"
+  AGENT_NAME: "K8s Agent (Cluster 1)"
+  CLUSTER_NAME: "production"
+  SCAN_INTERVAL: "30"
+  DAILY_SCAN_HOUR: "0"
+  DAILY_SCAN_MINUTE: "45"
+  LOG_TAIL_LINES: "50"
+  TARGET_NAMESPACES: "all"
+  REPORT_TIMEZONE: "Asia/Ho_Chi_Minh"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: insight-secrets
+  namespace: insight-system
+type: Opaque
+stringData:
+  # Replace with your actual values
+  TELEGRAM_BOT_TOKEN: "your-bot-token-here"
+  TELEGRAM_CHAT_ID: "your-chat-id-here"

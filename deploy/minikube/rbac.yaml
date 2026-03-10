@@ -1,0 +1,48 @@
+# ─── ServiceAccount for K8s Agent ───
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: insight-k8s-agent
+  namespace: insight-system
+  labels:
+    app.kubernetes.io/name: insight-k8s-agent
+---
+# ─── ClusterRole - Readonly access ───
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: insight-agent-readonly
+  labels:
+    app.kubernetes.io/name: insight
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces", "services"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list"]
+---
+# ─── ClusterRoleBinding ───
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: insight-agent-readonly-binding
+  labels:
+    app.kubernetes.io/name: insight
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: insight-agent-readonly
+subjects:
+  - kind: ServiceAccount
+    name: insight-k8s-agent
+    namespace: insight-system
