@@ -1,68 +1,84 @@
 'use client';
 
-import Image from 'next/image';
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useAuth } from './AuthProvider';
 
 const navItems = [
     {
-        section: 'Overview', items: [
-            { href: '/', label: 'Dashboard' },
+        label: 'OVERVIEW', items: [
+            { name: 'Dashboard', href: '/' },
         ]
     },
     {
-        section: 'Monitoring', items: [
-            { href: '/agents', label: 'Agents' },
-            { href: '/events', label: 'Events & Alerts' },
-            { href: '/logs', label: 'Error Logs' },
+        label: 'MONITORING', items: [
+            { name: 'Agents', href: '/agents' },
+            { name: 'Events & Alerts', href: '/events' },
+            { name: 'Error Logs', href: '/logs' },
         ]
     },
     {
-        section: 'Actions', items: [
-            { href: '/reports', label: 'Reports' },
-            { href: '/settings', label: 'Settings' },
+        label: 'RULES & ALERTS', items: [
+            { name: 'Notification Rules', href: '/rules' },
+        ]
+    },
+    {
+        label: 'ACTIONS', items: [
+            { name: 'Reports', href: '/reports' },
+            { name: 'Settings', href: '/settings' },
+        ]
+    },
+    {
+        label: 'SYSTEM', items: [
+            { name: 'Audit Log', href: '/audit' },
         ]
     },
 ];
 
 export default function Sidebar() {
     const pathname = usePathname();
+    const { user, logout } = useAuth();
 
     return (
         <aside className="sidebar">
             <div className="sidebar-brand">
-                <Image
-                    src="/images/logo.png"
+                <img
+                    src="https://ops.namabank.com.vn/assets/images/logo-OPS.78237a4d.png"
                     alt="Insight Logo"
-                    width={42}
-                    height={42}
-                    className="sidebar-brand-logo"
-                    priority
+                    className="sidebar-logo"
                 />
-                <h1>INSIGHT</h1>
+                <span className="sidebar-title">INSIGHT</span>
             </div>
+
             <nav className="sidebar-nav">
-                {navItems.map(section => (
-                    <div key={section.section} className="sidebar-nav-section">
-                        <div className="sidebar-nav-section-title">{section.section}</div>
-                        {section.items.map(item => (
-                            <Link key={item.href} href={item.href}>
-                                <div className={`sidebar-nav-item ${pathname === item.href ? 'active' : ''}`}>
-                                    <span>{item.label}</span>
-                                </div>
-                            </Link>
+                {navItems.map(group => (
+                    <div key={group.label} className="nav-section">
+                        <div className="nav-section-label">{group.label}</div>
+                        {group.items.map(item => (
+                            <a
+                                key={item.href}
+                                href={item.href}
+                                className={`nav-item ${pathname === item.href ? 'active' : ''}`}
+                            >
+                                {item.name}
+                            </a>
                         ))}
                     </div>
                 ))}
             </nav>
-            <div style={{
-                padding: '16px 24px',
-                borderTop: '1px solid var(--border-color)',
-                fontSize: '11px',
-                color: 'var(--text-muted)',
-                letterSpacing: '0.5px',
-            }}>
-                Insight v2.1.0
+
+            <div className="sidebar-footer">
+                {user && (
+                    <div className="sidebar-user">
+                        <div className="sidebar-user-info">
+                            <span className="sidebar-user-name">{user.username}</span>
+                            <span className="sidebar-user-role">{user.role}</span>
+                        </div>
+                        <button className="btn btn-sm btn-secondary" onClick={logout}>
+                            Logout
+                        </button>
+                    </div>
+                )}
+                <div className="sidebar-version">v4.0.0</div>
             </div>
         </aside>
     );

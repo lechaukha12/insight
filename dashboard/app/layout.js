@@ -1,5 +1,5 @@
 import './globals.css';
-import Sidebar from './components/Sidebar';
+import ClientLayout from './components/ClientLayout';
 
 export const metadata = {
   title: 'Insight - Monitoring System',
@@ -10,12 +10,7 @@ export default function RootLayout({ children }) {
   return (
     <html lang="vi">
       <body>
-        <div className="app-layout">
-          <Sidebar />
-          <main className="main-content">
-            {children}
-          </main>
-        </div>
+        <ClientLayout>{children}</ClientLayout>
       </body>
     </html>
   );

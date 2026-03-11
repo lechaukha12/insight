@@ -1,32 +1,72 @@
 /**
- * Insight Dashboard - API Client
+ * Insight Dashboard - API Client v4.0.0
  * Handles all communication with the Insight Core API
+ * Includes JWT auth header injection
  */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
 async function fetchAPI(endpoint, options = {}) {
     const url = `${API_BASE}${endpoint}`;
-    const res = await fetch(url, {
-        headers: { 'Content-Type': 'application/json', ...options.headers },
-        ...options,
-    });
+    const token = typeof window !== 'undefined' ? localStorage.getItem('insight_token') : null;
+    const headers = { 'Content-Type': 'application/json', ...options.headers };
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    const res = await fetch(url, { headers, ...options });
+    if (res.status === 401) {
+        // Token expired or invalid - redirect to login
+        if (typeof window !== 'undefined') {
+            localStorage.removeItem('insight_token');
+            localStorage.removeItem('insight_user');
+            window.location.href = '/login';
+        }
+        throw new Error('Authentication required');
+    }
     if (!res.ok) {
         throw new Error(`API error: ${res.status} ${res.statusText}`);
     }
     return res.json();
 }
 
+// ─── Auth ───
+
+export async function login(username, password) {
+    const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) throw new Error('Invalid credentials');
+    return res.json();
+}
+
+export async function getMe() {
+    return fetchAPI('/api/v1/auth/me');
+}
+
 // ─── Dashboard ───
 
-export async function getDashboardSummary() {
-    return fetchAPI('/api/v1/dashboard/summary');
+export async function getDashboardSummary(clusterId) {
+    const q = clusterId ? `?cluster_id=${clusterId}` : '';
+    return fetchAPI(`/api/v1/dashboard/summary${q}`);
+}
+
+// ─── Clusters ───
+
+export async function getClusters() {
+    return fetchAPI('/api/v1/clusters');
+}
+
+export async function createCluster(data) {
+    return fetchAPI('/api/v1/clusters', { method: 'POST', body: JSON.stringify(data) });
 }
 
 // ─── Agents ───
 
-export async function getAgents() {
-    return fetchAPI('/api/v1/agents');
+export async function getAgents(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return fetchAPI(`/api/v1/agents?${query}`);
 }
 
 export async function getAgent(agentId) {
@@ -34,10 +74,7 @@ export async function getAgent(agentId) {
 }
 
 export async function registerAgent(data) {
-    return fetchAPI('/api/v1/agents/register', {
-        method: 'POST',
-        body: JSON.stringify(data),
-    });
+    return fetchAPI('/api/v1/agents/register', { method: 'POST', body: JSON.stringify(data) });
 }
 
 // ─── Metrics ───
@@ -57,6 +94,7 @@ export async function getChartEvents(params = {}) {
     return fetchAPI(`/api/v1/charts/events?${query}`);
 }
 
+// ─── Events ───
 
 export async function getEvents(params = {}) {
     const query = new URLSearchParams(params).toString();
@@ -77,10 +115,7 @@ export async function getLogs(params = {}) {
 // ─── Reports ───
 
 export async function generateReport(channels = ['telegram']) {
-    return fetchAPI('/api/v1/reports/generate', {
-        method: 'POST',
-        body: JSON.stringify({ channels }),
-    });
+    return fetchAPI('/api/v1/reports/generate', { method: 'POST', body: JSON.stringify({ channels }) });
 }
 
 export async function getReports(limit = 20) {
@@ -94,14 +129,25 @@ export async function getAlertConfigs() {
 }
 
 export async function createAlertConfig(data) {
-    return fetchAPI('/api/v1/settings/alerts', {
-        method: 'POST',
-        body: JSON.stringify(data),
-    });
+    return fetchAPI('/api/v1/settings/alerts', { method: 'POST', body: JSON.stringify(data) });
 }
 
 export async function deleteAlertConfig(configId) {
     return fetchAPI(`/api/v1/settings/alerts/${configId}`, { method: 'DELETE' });
+}
+
+// ─── Rules ───
+
+export async function getRules() {
+    return fetchAPI('/api/v1/rules');
+}
+
+export async function createRule(data) {
+    return fetchAPI('/api/v1/rules', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function deleteRule(ruleId) {
+    return fetchAPI(`/api/v1/rules/${ruleId}`, { method: 'DELETE' });
 }
 
 // ─── Settings ───
@@ -111,8 +157,12 @@ export async function getSettings() {
 }
 
 export async function updateSettings(data) {
-    return fetchAPI('/api/v1/settings', {
-        method: 'PUT',
-        body: JSON.stringify(data),
-    });
+    return fetchAPI('/api/v1/settings', { method: 'PUT', body: JSON.stringify(data) });
+}
+
+// ─── Audit ───
+
+export async function getAuditLogs(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return fetchAPI(`/api/v1/audit?${query}`);
 }

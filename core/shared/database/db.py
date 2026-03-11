@@ -1,6 +1,9 @@
 """
 Insight Monitoring System - Database Connection & Operations
-Uses SQLite for MVP (can swap to PostgreSQL via DATABASE_URL env var).
+Supports PostgreSQL (production) and SQLite (dev fallback).
+Set DATABASE_URL env var:
+  - postgresql://user:pass@host:5432/insight  → PostgreSQL
+  - /path/to/file.db or insight.db            → SQLite
 """
 
 import json
@@ -13,12 +16,162 @@ from typing import Any
 
 DATABASE_URL = os.getenv("DATABASE_URL", "insight.db")
 
-_CREATE_TABLES = """
+# Detect database type
+IS_POSTGRES = DATABASE_URL.startswith("postgres")
+
+# PostgreSQL table creation (with JSONB)
+_PG_CREATE_TABLES = """
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'admin',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS clusters (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    status TEXT DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     agent_type TEXT NOT NULL,
     hostname TEXT DEFAULT '',
+    cluster_id TEXT DEFAULT 'default',
+    status TEXT DEFAULT 'active',
+    labels JSONB DEFAULT '{}',
+    last_heartbeat TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS metrics (
+    id SERIAL PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    metric_name TEXT NOT NULL,
+    metric_value DOUBLE PRECISION NOT NULL,
+    labels JSONB DEFAULT '{}',
+    timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_metrics_agent ON metrics(agent_id);
+CREATE INDEX IF NOT EXISTS idx_metrics_time ON metrics(timestamp);
+CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(metric_name);
+
+CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    level TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT DEFAULT '',
+    source TEXT DEFAULT '',
+    namespace TEXT DEFAULT '',
+    resource TEXT DEFAULT '',
+    details JSONB DEFAULT '{}',
+    acknowledged BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id);
+CREATE INDEX IF NOT EXISTS idx_events_level ON events(level);
+CREATE INDEX IF NOT EXISTS idx_events_time ON events(created_at);
+
+CREATE TABLE IF NOT EXISTS logs (
+    id SERIAL PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    namespace TEXT DEFAULT '',
+    pod_name TEXT DEFAULT '',
+    container TEXT DEFAULT '',
+    log_level TEXT DEFAULT 'error',
+    message TEXT DEFAULT '',
+    timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_agent ON logs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(timestamp);
+
+CREATE TABLE IF NOT EXISTS alert_configs (
+    id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    config JSONB NOT NULL DEFAULT '{}',
+    enabled BOOLEAN DEFAULT TRUE,
+    alert_levels JSONB DEFAULT '["critical","error"]',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS notification_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    operator TEXT NOT NULL DEFAULT '>',
+    threshold DOUBLE PRECISION NOT NULL,
+    duration_minutes INTEGER DEFAULT 5,
+    channels JSONB DEFAULT '["telegram"]',
+    enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS reports (
+    id TEXT PRIMARY KEY,
+    report_type TEXT NOT NULL,
+    content JSONB DEFAULT '{}',
+    generated_at TIMESTAMPTZ DEFAULT NOW(),
+    sent_to JSONB DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id SERIAL PRIMARY KEY,
+    user_id TEXT DEFAULT 'system',
+    username TEXT DEFAULT 'system',
+    action TEXT NOT NULL,
+    resource TEXT DEFAULT '',
+    details JSONB DEFAULT '{}',
+    ip TEXT DEFAULT '',
+    timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_logs(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
+
+-- Insert default cluster
+INSERT INTO clusters (id, name, description) VALUES ('default', 'Default Cluster', 'Default monitoring cluster')
+ON CONFLICT (id) DO NOTHING;
+"""
+
+# SQLite table creation (backward compatible)
+_SQLITE_CREATE_TABLES = """
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'admin',
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS clusters (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    status TEXT DEFAULT 'active',
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    agent_type TEXT NOT NULL,
+    hostname TEXT DEFAULT '',
+    cluster_id TEXT DEFAULT 'default',
     status TEXT DEFAULT 'active',
     labels TEXT DEFAULT '{}',
     last_heartbeat TEXT,
@@ -82,6 +235,18 @@ CREATE TABLE IF NOT EXISTS alert_configs (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS notification_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    operator TEXT NOT NULL DEFAULT '>',
+    threshold REAL NOT NULL,
+    duration_minutes INTEGER DEFAULT 5,
+    channels TEXT DEFAULT '["telegram"]',
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS reports (
     id TEXT PRIMARY KEY,
     report_type TEXT NOT NULL,
@@ -95,16 +260,53 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL,
     updated_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT DEFAULT 'system',
+    username TEXT DEFAULT 'system',
+    action TEXT NOT NULL,
+    resource TEXT DEFAULT '',
+    details TEXT DEFAULT '{}',
+    ip TEXT DEFAULT '',
+    timestamp TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_logs(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
 """
 
+# ─── PostgreSQL Connection ───
 
-def get_db_path() -> str:
-    return DATABASE_URL
+_pg_pool = None
 
+def _get_pg_pool():
+    global _pg_pool
+    if _pg_pool is None:
+        import asyncpg
+        import asyncio
+        loop = asyncio.get_event_loop()
+        _pg_pool = loop.run_until_complete(
+            asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+        )
+    return _pg_pool
 
 @contextmanager
-def get_connection():
-    conn = sqlite3.connect(get_db_path())
+def pg_connection():
+    import asyncio
+    pool = _get_pg_pool()
+    loop = asyncio.get_event_loop()
+    conn = loop.run_until_complete(pool.acquire())
+    try:
+        yield conn
+    finally:
+        loop.run_until_complete(pool.release(conn))
+
+# ─── SQLite Connection ───
+
+@contextmanager
+def sqlite_connection():
+    conn = sqlite3.connect(DATABASE_URL)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -117,185 +319,365 @@ def get_connection():
     finally:
         conn.close()
 
+# ─── Unified Interface ───
+
+@contextmanager
+def get_connection():
+    """Get a database connection (PostgreSQL or SQLite)."""
+    if IS_POSTGRES:
+        with pg_connection() as conn:
+            yield conn
+    else:
+        with sqlite_connection() as conn:
+            yield conn
+
+
+def _run_pg(query, params=None, fetch=False, fetchone=False):
+    """Run a PostgreSQL query synchronously."""
+    import asyncio
+    pool = _get_pg_pool()
+
+    async def _exec():
+        async with pool.acquire() as conn:
+            if fetchone:
+                return await conn.fetchrow(query, *(params or []))
+            elif fetch:
+                return await conn.fetch(query, *(params or []))
+            else:
+                return await conn.execute(query, *(params or []))
+    
+    loop = asyncio.get_event_loop()
+    return loop.run_until_complete(_exec())
+
+
+def _run_sqlite(query, params=None, fetch=False, fetchone=False):
+    """Run a SQLite query synchronously."""
+    with sqlite_connection() as conn:
+        cursor = conn.execute(query, params or [])
+        if fetchone:
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        elif fetch:
+            return [dict(r) for r in cursor.fetchall()]
+        return None
+
+
+def db_execute(query_sqlite, query_pg=None, params_sqlite=None, params_pg=None, fetch=False, fetchone=False):
+    """Execute query on the appropriate database."""
+    if IS_POSTGRES:
+        q = query_pg or query_sqlite
+        p = params_pg or params_sqlite
+        result = _run_pg(q, p, fetch=fetch, fetchone=fetchone)
+        if fetch and result:
+            return [dict(r) for r in result]
+        elif fetchone and result:
+            return dict(result)
+        return result
+    else:
+        return _run_sqlite(query_sqlite, params_sqlite, fetch=fetch, fetchone=fetchone)
+
 
 def init_db():
-    with get_connection() as conn:
-        conn.executescript(_CREATE_TABLES)
-    print("[DB] Database initialized successfully")
+    """Initialize database tables."""
+    if IS_POSTGRES:
+        import asyncio
+        pool = _get_pg_pool()
+        async def _init():
+            async with pool.acquire() as conn:
+                await conn.execute(_PG_CREATE_TABLES)
+        asyncio.get_event_loop().run_until_complete(_init())
+        print("[DB] PostgreSQL initialized successfully")
+    else:
+        with sqlite_connection() as conn:
+            conn.executescript(_SQLITE_CREATE_TABLES)
+            # Insert default cluster for SQLite
+            conn.execute(
+                "INSERT OR IGNORE INTO clusters (id, name, description) VALUES (?, ?, ?)",
+                ('default', 'Default Cluster', 'Default monitoring cluster')
+            )
+        print("[DB] SQLite initialized successfully")
+
+
+def _parse_json_field(value, default="{}"):
+    """Parse JSON field that might be string or already parsed."""
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value or default)
+    except (json.JSONDecodeError, TypeError):
+        return json.loads(default)
+
+
+# ─── User CRUD ───
+
+def create_user(username: str, password_hash: str, role: str = "admin") -> dict:
+    user_id = str(uuid.uuid4())
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO users (id, username, password_hash, role) VALUES ($1, $2, $3, $4)",
+            [user_id, username, password_hash, role]
+        )
+    else:
+        _run_sqlite(
+            "INSERT INTO users (id, username, password_hash, role) VALUES (?, ?, ?, ?)",
+            [user_id, username, password_hash, role]
+        )
+    return {"id": user_id, "username": username, "role": role}
+
+
+def get_user_by_username(username: str) -> dict | None:
+    if IS_POSTGRES:
+        return db_execute(
+            "", "SELECT * FROM users WHERE username = $1",
+            params_pg=[username], fetchone=True
+        )
+    else:
+        return _run_sqlite("SELECT * FROM users WHERE username = ?", [username], fetchone=True)
+
+
+def get_user_by_id(user_id: str) -> dict | None:
+    if IS_POSTGRES:
+        return db_execute("", "SELECT * FROM users WHERE id = $1", params_pg=[user_id], fetchone=True)
+    else:
+        return _run_sqlite("SELECT * FROM users WHERE id = ?", [user_id], fetchone=True)
+
+
+# ─── Cluster CRUD ───
+
+def create_cluster(name: str, description: str = "") -> dict:
+    cluster_id = str(uuid.uuid4())
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO clusters (id, name, description) VALUES ($1, $2, $3)",
+            [cluster_id, name, description]
+        )
+    else:
+        _run_sqlite(
+            "INSERT INTO clusters (id, name, description) VALUES (?, ?, ?)",
+            [cluster_id, name, description]
+        )
+    return {"id": cluster_id, "name": name, "description": description, "status": "active"}
+
+
+def list_clusters() -> list[dict]:
+    if IS_POSTGRES:
+        return db_execute("", "SELECT * FROM clusters ORDER BY created_at DESC", fetch=True) or []
+    else:
+        return _run_sqlite("SELECT * FROM clusters ORDER BY created_at DESC", fetch=True) or []
+
+
+def get_cluster(cluster_id: str) -> dict | None:
+    if IS_POSTGRES:
+        return db_execute("", "SELECT * FROM clusters WHERE id = $1", params_pg=[cluster_id], fetchone=True)
+    else:
+        return _run_sqlite("SELECT * FROM clusters WHERE id = ?", [cluster_id], fetchone=True)
 
 
 # ─── Agent CRUD ───
 
-
-def register_agent(name: str, agent_type: str, hostname: str = "", labels: dict = None) -> dict:
+def register_agent(name: str, agent_type: str, hostname: str = "", labels: dict = None, cluster_id: str = "default") -> dict:
     agent_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO agents (id, name, agent_type, hostname, status, labels, last_heartbeat, created_at) "
-            "VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
-            (agent_id, name, agent_type, hostname, json.dumps(labels or {}), now, now),
+    labels_val = json.dumps(labels or {})
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO agents (id, name, agent_type, hostname, cluster_id, status, labels, last_heartbeat) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)",
+            [agent_id, name, agent_type, hostname, cluster_id, labels_val, now]
+        )
+    else:
+        _run_sqlite(
+            "INSERT INTO agents (id, name, agent_type, hostname, cluster_id, status, labels, last_heartbeat, created_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+            [agent_id, name, agent_type, hostname, cluster_id, labels_val, now, now]
         )
     return {"id": agent_id, "name": name, "agent_type": agent_type, "status": "active"}
 
 
 def get_agent(agent_id: str) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
-    return dict(row) if row else None
+    if IS_POSTGRES:
+        row = db_execute("", "SELECT * FROM agents WHERE id = $1", params_pg=[agent_id], fetchone=True)
+    else:
+        row = _run_sqlite("SELECT * FROM agents WHERE id = ?", [agent_id], fetchone=True)
+    if row:
+        row["labels"] = _parse_json_field(row.get("labels"))
+    return row
 
 
-def get_or_create_agent(agent_id: str, name: str, agent_type: str, hostname: str = "") -> dict:
+def get_or_create_agent(agent_id: str, name: str, agent_type: str, hostname: str = "", cluster_id: str = "default") -> dict:
     agent = get_agent(agent_id)
     if agent:
         update_agent_heartbeat(agent_id)
         return agent
-    return register_agent_with_id(agent_id, name, agent_type, hostname)
+    return register_agent_with_id(agent_id, name, agent_type, hostname, cluster_id=cluster_id)
 
 
-def register_agent_with_id(agent_id: str, name: str, agent_type: str, hostname: str = "", labels: dict = None) -> dict:
+def register_agent_with_id(agent_id: str, name: str, agent_type: str, hostname: str = "", labels: dict = None, cluster_id: str = "default") -> dict:
     now = datetime.now(timezone.utc).isoformat()
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO agents (id, name, agent_type, hostname, status, labels, last_heartbeat, created_at) "
-            "VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
-            (agent_id, name, agent_type, hostname, json.dumps(labels or {}), now, now),
+    labels_val = json.dumps(labels or {})
+    if IS_POSTGRES:
+        _run_pg(
+            """INSERT INTO agents (id, name, agent_type, hostname, cluster_id, status, labels, last_heartbeat)
+               VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)
+               ON CONFLICT (id) DO UPDATE SET name=$2, last_heartbeat=$7, status='active'""",
+            [agent_id, name, agent_type, hostname, cluster_id, labels_val, now]
+        )
+    else:
+        _run_sqlite(
+            "INSERT OR REPLACE INTO agents (id, name, agent_type, hostname, cluster_id, status, labels, last_heartbeat, created_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+            [agent_id, name, agent_type, hostname, cluster_id, labels_val, now, now]
         )
     return {"id": agent_id, "name": name, "agent_type": agent_type, "status": "active"}
 
 
-def list_agents() -> list[dict]:
-    with get_connection() as conn:
-        rows = conn.execute("SELECT * FROM agents ORDER BY created_at DESC").fetchall()
-    return [dict(r) for r in rows]
+def list_agents(cluster_id: str = None) -> list[dict]:
+    if IS_POSTGRES:
+        if cluster_id and cluster_id != 'all':
+            rows = db_execute("", "SELECT * FROM agents WHERE cluster_id = $1 ORDER BY created_at DESC",
+                            params_pg=[cluster_id], fetch=True) or []
+        else:
+            rows = db_execute("", "SELECT * FROM agents ORDER BY created_at DESC", fetch=True) or []
+    else:
+        if cluster_id and cluster_id != 'all':
+            rows = _run_sqlite("SELECT * FROM agents WHERE cluster_id = ? ORDER BY created_at DESC",
+                              [cluster_id], fetch=True) or []
+        else:
+            rows = _run_sqlite("SELECT * FROM agents ORDER BY created_at DESC", fetch=True) or []
+    for r in rows:
+        r["labels"] = _parse_json_field(r.get("labels"))
+    return rows
 
 
 def update_agent_heartbeat(agent_id: str):
     now = datetime.now(timezone.utc).isoformat()
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE agents SET last_heartbeat = ?, status = 'active' WHERE id = ?",
-            (now, agent_id),
-        )
+    if IS_POSTGRES:
+        _run_pg("UPDATE agents SET last_heartbeat = $1, status = 'active' WHERE id = $2", [now, agent_id])
+    else:
+        _run_sqlite("UPDATE agents SET last_heartbeat = ?, status = 'active' WHERE id = ?", [now, agent_id])
 
 
 def update_agent_status(agent_id: str, status: str):
-    with get_connection() as conn:
-        conn.execute("UPDATE agents SET status = ? WHERE id = ?", (status, agent_id))
+    if IS_POSTGRES:
+        _run_pg("UPDATE agents SET status = $1 WHERE id = $2", [status, agent_id])
+    else:
+        _run_sqlite("UPDATE agents SET status = ? WHERE id = ?", [status, agent_id])
 
 
 # ─── Metrics CRUD ───
 
-
 def insert_metrics(agent_id: str, metrics: list[dict]):
-    with get_connection() as conn:
-        for m in metrics:
-            conn.execute(
-                "INSERT INTO metrics (agent_id, metric_name, metric_value, labels, timestamp) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    agent_id,
-                    m.get("metric_name", ""),
-                    m.get("metric_value", 0),
-                    json.dumps(m.get("labels", {})),
-                    m.get("timestamp", datetime.now(timezone.utc).isoformat()),
-                ),
+    for m in metrics:
+        ts = m.get("timestamp", datetime.now(timezone.utc).isoformat())
+        labels_val = json.dumps(m.get("labels", {}))
+        if IS_POSTGRES:
+            _run_pg(
+                "INSERT INTO metrics (agent_id, metric_name, metric_value, labels, timestamp) VALUES ($1, $2, $3, $4, $5)",
+                [agent_id, m.get("metric_name", ""), m.get("metric_value", 0), labels_val, ts]
+            )
+        else:
+            _run_sqlite(
+                "INSERT INTO metrics (agent_id, metric_name, metric_value, labels, timestamp) VALUES (?, ?, ?, ?, ?)",
+                [agent_id, m.get("metric_name", ""), m.get("metric_value", 0), labels_val, ts]
             )
 
 
 def get_metrics(agent_id: str = None, metric_name: str = None, last_hours: int = 24, limit: int = 1000) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
-    query = "SELECT * FROM metrics WHERE timestamp >= ?"
-    params: list[Any] = [cutoff]
-
-    if agent_id:
-        query += " AND agent_id = ?"
-        params.append(agent_id)
-    if metric_name:
-        query += " AND metric_name = ?"
-        params.append(metric_name)
-
-    query += " ORDER BY timestamp DESC LIMIT ?"
-    params.append(limit)
-
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    results = []
+    if IS_POSTGRES:
+        query = "SELECT * FROM metrics WHERE timestamp >= $1"
+        params = [cutoff]
+        idx = 2
+        if agent_id:
+            query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
+        if metric_name:
+            query += f" AND metric_name = ${idx}"; params.append(metric_name); idx += 1
+        query += f" ORDER BY timestamp DESC LIMIT ${idx}"
+        params.append(limit)
+        rows = db_execute("", query, params_pg=params, fetch=True) or []
+    else:
+        query = "SELECT * FROM metrics WHERE timestamp >= ?"
+        params = [cutoff]
+        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
+        if metric_name: query += " AND metric_name = ?"; params.append(metric_name)
+        query += " ORDER BY timestamp DESC LIMIT ?"; params.append(limit)
+        rows = _run_sqlite(query, params, fetch=True) or []
     for r in rows:
-        d = dict(r)
-        d["labels"] = json.loads(d.get("labels", "{}"))
-        results.append(d)
-    return results
+        r["labels"] = _parse_json_field(r.get("labels"))
+    return rows
 
 
 def get_latest_metrics_per_agent() -> dict[str, list[dict]]:
-    """Get the most recent metrics grouped by agent."""
-    with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT m.* FROM metrics m
+    query = """SELECT m.* FROM metrics m
                INNER JOIN (
                    SELECT agent_id, metric_name, MAX(timestamp) as max_ts
-                   FROM metrics
-                   GROUP BY agent_id, metric_name
+                   FROM metrics GROUP BY agent_id, metric_name
                ) latest ON m.agent_id = latest.agent_id
                    AND m.metric_name = latest.metric_name
                    AND m.timestamp = latest.max_ts
                ORDER BY m.agent_id, m.metric_name"""
-        ).fetchall()
+    if IS_POSTGRES:
+        rows = db_execute("", query, fetch=True) or []
+    else:
+        rows = _run_sqlite(query, fetch=True) or []
 
     result: dict[str, list[dict]] = {}
     for r in rows:
-        d = dict(r)
-        d["labels"] = json.loads(d.get("labels", "{}"))
-        aid = d["agent_id"]
+        r["labels"] = _parse_json_field(r.get("labels"))
+        aid = r["agent_id"]
         if aid not in result:
             result[aid] = []
-        result[aid].append(d)
+        result[aid].append(r)
     return result
 
 
 def get_metrics_timeseries(agent_id: str = None, last_hours: int = 6, metric_names: list[str] = None) -> list[dict]:
-    """Get metrics as time-series data, suitable for Recharts line charts."""
+    """Get metrics as time-series data for Recharts."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
-    query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= ?"
-    params: list[Any] = [cutoff]
+    if IS_POSTGRES:
+        query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= $1"
+        params = [cutoff]
+        idx = 2
+        if agent_id:
+            query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
+        if metric_names:
+            placeholders = ", ".join(f"${idx + i}" for i in range(len(metric_names)))
+            query += f" AND metric_name IN ({placeholders})"
+            params.extend(metric_names)
+        query += " ORDER BY timestamp ASC"
+        rows = db_execute("", query, params_pg=params, fetch=True) or []
+    else:
+        query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= ?"
+        params: list[Any] = [cutoff]
+        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
+        if metric_names:
+            placeholders = ",".join("?" * len(metric_names))
+            query += f" AND metric_name IN ({placeholders})"
+            params.extend(metric_names)
+        query += " ORDER BY timestamp ASC"
+        rows = _run_sqlite(query, params, fetch=True) or []
 
-    if agent_id:
-        query += " AND agent_id = ?"
-        params.append(agent_id)
-    if metric_names:
-        placeholders = ",".join("?" * len(metric_names))
-        query += f" AND metric_name IN ({placeholders})"
-        params.extend(metric_names)
-
-    query += " ORDER BY timestamp ASC"
-
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-
-    # Group into time-series format: [{timestamp, cpu_percent, memory_percent, ...}]
     time_map: dict[str, dict] = {}
     for r in rows:
-        ts = r["timestamp"][:16]  # Truncate to minute precision
+        ts = str(r["timestamp"])[:16]
         if ts not in time_map:
             time_map[ts] = {"time": ts}
-        time_map[ts][r["metric_name"]] = round(r["metric_value"], 2)
-
+        time_map[ts][r["metric_name"]] = round(float(r["metric_value"]), 2)
     return list(time_map.values())
 
 
 def get_event_counts_by_hour(last_hours: int = 24) -> list[dict]:
-    """Get event counts grouped by hour and level, for bar charts."""
+    """Get event counts grouped by hour and level."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
-    with get_connection() as conn:
-        rows = conn.execute(
-            """SELECT strftime('%Y-%m-%d %H:00', created_at) as hour,
-                      level, COUNT(*) as count
-               FROM events WHERE created_at >= ?
-               GROUP BY hour, level
-               ORDER BY hour ASC""",
-            (cutoff,),
-        ).fetchall()
+    if IS_POSTGRES:
+        query = """SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as hour,
+                          level, COUNT(*) as count
+                   FROM events WHERE created_at >= $1
+                   GROUP BY hour, level ORDER BY hour ASC"""
+        rows = db_execute("", query, params_pg=[cutoff], fetch=True) or []
+    else:
+        query = """SELECT strftime('%Y-%m-%d %H:00', created_at) as hour,
+                          level, COUNT(*) as count
+                   FROM events WHERE created_at >= ?
+                   GROUP BY hour, level ORDER BY hour ASC"""
+        rows = _run_sqlite(query, [cutoff], fetch=True) or []
 
     hour_map: dict[str, dict] = {}
     for r in rows:
@@ -303,203 +685,279 @@ def get_event_counts_by_hour(last_hours: int = 24) -> list[dict]:
         if h not in hour_map:
             hour_map[h] = {"hour": h, "critical": 0, "error": 0, "warning": 0, "info": 0}
         hour_map[h][r["level"]] = r["count"]
-
     return list(hour_map.values())
 
 
 # ─── Events CRUD ───
 
-
 def insert_events(agent_id: str, events: list[dict]):
-    with get_connection() as conn:
-        for e in events:
-            event_id = str(uuid.uuid4())
-            conn.execute(
-                "INSERT INTO events (id, agent_id, level, title, message, source, namespace, resource, details, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    event_id,
-                    agent_id,
-                    e.get("level", "info"),
-                    e.get("title", ""),
-                    e.get("message", ""),
-                    e.get("source", ""),
-                    e.get("namespace", ""),
-                    e.get("resource", ""),
-                    json.dumps(e.get("details", {})),
-                    e.get("timestamp", datetime.now(timezone.utc).isoformat()),
-                ),
+    for e in events:
+        event_id = str(uuid.uuid4())
+        ts = e.get("timestamp", datetime.now(timezone.utc).isoformat())
+        details_val = json.dumps(e.get("details", {}))
+        if IS_POSTGRES:
+            _run_pg(
+                "INSERT INTO events (id, agent_id, level, title, message, source, namespace, resource, details, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                [event_id, agent_id, e.get("level","info"), e.get("title",""), e.get("message",""),
+                 e.get("source",""), e.get("namespace",""), e.get("resource",""), details_val, ts]
+            )
+        else:
+            _run_sqlite(
+                "INSERT INTO events (id, agent_id, level, title, message, source, namespace, resource, details, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                [event_id, agent_id, e.get("level","info"), e.get("title",""), e.get("message",""),
+                 e.get("source",""), e.get("namespace",""), e.get("resource",""), details_val, ts]
             )
 
 
 def get_events(agent_id: str = None, level: str = None, last_hours: int = 24, limit: int = 200) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
-    query = "SELECT * FROM events WHERE created_at >= ?"
-    params: list[Any] = [cutoff]
-
-    if agent_id:
-        query += " AND agent_id = ?"
-        params.append(agent_id)
-    if level:
-        query += " AND level = ?"
-        params.append(level)
-
-    query += " ORDER BY created_at DESC LIMIT ?"
-    params.append(limit)
-
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    results = []
+    if IS_POSTGRES:
+        query = "SELECT * FROM events WHERE created_at >= $1"
+        params = [cutoff]; idx = 2
+        if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
+        if level: query += f" AND level = ${idx}"; params.append(level); idx += 1
+        query += f" ORDER BY created_at DESC LIMIT ${idx}"; params.append(limit)
+        rows = db_execute("", query, params_pg=params, fetch=True) or []
+    else:
+        query = "SELECT * FROM events WHERE created_at >= ?"; params = [cutoff]
+        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
+        if level: query += " AND level = ?"; params.append(level)
+        query += " ORDER BY created_at DESC LIMIT ?"; params.append(limit)
+        rows = _run_sqlite(query, params, fetch=True) or []
     for r in rows:
-        d = dict(r)
-        d["details"] = json.loads(d.get("details", "{}"))
-        results.append(d)
-    return results
+        r["details"] = _parse_json_field(r.get("details"))
+    return rows
 
 
 def get_event_counts(last_hours: int = 24) -> dict[str, int]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT level, COUNT(*) as cnt FROM events WHERE created_at >= ? GROUP BY level",
-            (cutoff,),
-        ).fetchall()
+    if IS_POSTGRES:
+        rows = db_execute("", "SELECT level, COUNT(*) as cnt FROM events WHERE created_at >= $1 GROUP BY level",
+                         params_pg=[cutoff], fetch=True) or []
+    else:
+        rows = _run_sqlite("SELECT level, COUNT(*) as cnt FROM events WHERE created_at >= ? GROUP BY level",
+                          [cutoff], fetch=True) or []
     return {r["level"]: r["cnt"] for r in rows}
 
 
 def acknowledge_event(event_id: str):
-    with get_connection() as conn:
-        conn.execute("UPDATE events SET acknowledged = 1 WHERE id = ?", (event_id,))
+    if IS_POSTGRES:
+        _run_pg("UPDATE events SET acknowledged = TRUE WHERE id = $1", [event_id])
+    else:
+        _run_sqlite("UPDATE events SET acknowledged = 1 WHERE id = ?", [event_id])
 
 
 # ─── Logs CRUD ───
 
-
 def insert_logs(agent_id: str, logs: list[dict]):
-    with get_connection() as conn:
-        for log in logs:
-            conn.execute(
-                "INSERT INTO logs (agent_id, namespace, pod_name, container, log_level, message, timestamp) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    agent_id,
-                    log.get("namespace", ""),
-                    log.get("pod_name", ""),
-                    log.get("container", ""),
-                    log.get("log_level", "error"),
-                    log.get("message", ""),
-                    log.get("timestamp", datetime.now(timezone.utc).isoformat()),
-                ),
+    for log in logs:
+        ts = log.get("timestamp", datetime.now(timezone.utc).isoformat())
+        if IS_POSTGRES:
+            _run_pg(
+                "INSERT INTO logs (agent_id, namespace, pod_name, container, log_level, message, timestamp) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                [agent_id, log.get("namespace",""), log.get("pod_name",""), log.get("container",""),
+                 log.get("log_level","error"), log.get("message",""), ts]
+            )
+        else:
+            _run_sqlite(
+                "INSERT INTO logs (agent_id, namespace, pod_name, container, log_level, message, timestamp) VALUES (?,?,?,?,?,?,?)",
+                [agent_id, log.get("namespace",""), log.get("pod_name",""), log.get("container",""),
+                 log.get("log_level","error"), log.get("message",""), ts]
             )
 
 
 def get_logs(agent_id: str = None, last_hours: int = 24, limit: int = 500) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
-    query = "SELECT * FROM logs WHERE timestamp >= ?"
-    params: list[Any] = [cutoff]
-
-    if agent_id:
-        query += " AND agent_id = ?"
-        params.append(agent_id)
-
-    query += " ORDER BY timestamp DESC LIMIT ?"
-    params.append(limit)
-
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [dict(r) for r in rows]
+    if IS_POSTGRES:
+        query = "SELECT * FROM logs WHERE timestamp >= $1"; params = [cutoff]; idx = 2
+        if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
+        query += f" ORDER BY timestamp DESC LIMIT ${idx}"; params.append(limit)
+        return db_execute("", query, params_pg=params, fetch=True) or []
+    else:
+        query = "SELECT * FROM logs WHERE timestamp >= ?"; params = [cutoff]
+        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
+        query += " ORDER BY timestamp DESC LIMIT ?"; params.append(limit)
+        return _run_sqlite(query, params, fetch=True) or []
 
 
 # ─── Alert Config CRUD ───
 
-
 def save_alert_config(channel: str, config: dict, enabled: bool = True, alert_levels: list[str] = None) -> dict:
     config_id = str(uuid.uuid4())
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO alert_configs (id, channel, config, enabled, alert_levels) VALUES (?, ?, ?, ?, ?)",
-            (
-                config_id,
-                channel,
-                json.dumps(config),
-                1 if enabled else 0,
-                json.dumps(alert_levels or ["critical", "error"]),
-            ),
+    config_val = json.dumps(config)
+    levels_val = json.dumps(alert_levels or ["critical", "error"])
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO alert_configs (id, channel, config, enabled, alert_levels) VALUES ($1,$2,$3,$4,$5)",
+            [config_id, channel, config_val, enabled, levels_val]
+        )
+    else:
+        _run_sqlite(
+            "INSERT INTO alert_configs (id, channel, config, enabled, alert_levels) VALUES (?,?,?,?,?)",
+            [config_id, channel, config_val, 1 if enabled else 0, levels_val]
         )
     return {"id": config_id, "channel": channel, "enabled": enabled}
 
 
 def get_alert_configs(channel: str = None) -> list[dict]:
-    query = "SELECT * FROM alert_configs"
-    params = []
-    if channel:
-        query += " WHERE channel = ?"
-        params.append(channel)
-
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    results = []
+    if IS_POSTGRES:
+        if channel:
+            rows = db_execute("", "SELECT * FROM alert_configs WHERE channel = $1", params_pg=[channel], fetch=True) or []
+        else:
+            rows = db_execute("", "SELECT * FROM alert_configs", fetch=True) or []
+    else:
+        if channel:
+            rows = _run_sqlite("SELECT * FROM alert_configs WHERE channel = ?", [channel], fetch=True) or []
+        else:
+            rows = _run_sqlite("SELECT * FROM alert_configs", fetch=True) or []
     for r in rows:
-        d = dict(r)
-        d["config"] = json.loads(d.get("config", "{}"))
-        d["alert_levels"] = json.loads(d.get("alert_levels", "[]"))
-        d["enabled"] = bool(d.get("enabled", 0))
-        results.append(d)
-    return results
+        r["config"] = _parse_json_field(r.get("config"))
+        r["alert_levels"] = _parse_json_field(r.get("alert_levels"), "[]")
+        r["enabled"] = bool(r.get("enabled", 0))
+    return rows
 
 
 def delete_alert_config(config_id: str):
-    with get_connection() as conn:
-        conn.execute("DELETE FROM alert_configs WHERE id = ?", (config_id,))
+    if IS_POSTGRES:
+        _run_pg("DELETE FROM alert_configs WHERE id = $1", [config_id])
+    else:
+        _run_sqlite("DELETE FROM alert_configs WHERE id = ?", [config_id])
+
+
+# ─── Notification Rules CRUD ───
+
+def save_rule(name: str, metric_name: str, operator: str, threshold: float, duration_minutes: int = 5, channels: list[str] = None) -> dict:
+    rule_id = str(uuid.uuid4())
+    channels_val = json.dumps(channels or ["telegram"])
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO notification_rules (id, name, metric_name, operator, threshold, duration_minutes, channels) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            [rule_id, name, metric_name, operator, threshold, duration_minutes, channels_val]
+        )
+    else:
+        _run_sqlite(
+            "INSERT INTO notification_rules (id, name, metric_name, operator, threshold, duration_minutes, channels) VALUES (?,?,?,?,?,?,?)",
+            [rule_id, name, metric_name, operator, threshold, duration_minutes, channels_val]
+        )
+    return {"id": rule_id, "name": name, "metric_name": metric_name, "operator": operator, "threshold": threshold}
+
+
+def get_rules(enabled_only: bool = False) -> list[dict]:
+    if IS_POSTGRES:
+        q = "SELECT * FROM notification_rules"
+        if enabled_only:
+            q += " WHERE enabled = TRUE"
+        q += " ORDER BY created_at DESC"
+        rows = db_execute("", q, fetch=True) or []
+    else:
+        q = "SELECT * FROM notification_rules"
+        if enabled_only:
+            q += " WHERE enabled = 1"
+        q += " ORDER BY created_at DESC"
+        rows = _run_sqlite(q, fetch=True) or []
+    for r in rows:
+        r["channels"] = _parse_json_field(r.get("channels"), "[]")
+        r["enabled"] = bool(r.get("enabled", 0))
+    return rows
+
+
+def delete_rule(rule_id: str):
+    if IS_POSTGRES:
+        _run_pg("DELETE FROM notification_rules WHERE id = $1", [rule_id])
+    else:
+        _run_sqlite("DELETE FROM notification_rules WHERE id = ?", [rule_id])
+
+
+def toggle_rule(rule_id: str, enabled: bool):
+    if IS_POSTGRES:
+        _run_pg("UPDATE notification_rules SET enabled = $1 WHERE id = $2", [enabled, rule_id])
+    else:
+        _run_sqlite("UPDATE notification_rules SET enabled = ? WHERE id = ?", [1 if enabled else 0, rule_id])
 
 
 # ─── Reports CRUD ───
 
-
 def save_report(report_type: str, content: dict, sent_to: list[str] = None) -> dict:
     report_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO reports (id, report_type, content, generated_at, sent_to) VALUES (?, ?, ?, ?, ?)",
-            (report_id, report_type, json.dumps(content), now, json.dumps(sent_to or [])),
+    content_val = json.dumps(content)
+    sent_val = json.dumps(sent_to or [])
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO reports (id, report_type, content, generated_at, sent_to) VALUES ($1,$2,$3,$4,$5)",
+            [report_id, report_type, content_val, now, sent_val]
+        )
+    else:
+        _run_sqlite(
+            "INSERT INTO reports (id, report_type, content, generated_at, sent_to) VALUES (?,?,?,?,?)",
+            [report_id, report_type, content_val, now, sent_val]
         )
     return {"id": report_id, "report_type": report_type, "generated_at": now}
 
 
 def get_reports(limit: int = 20) -> list[dict]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM reports ORDER BY generated_at DESC LIMIT ?", (limit,)
-        ).fetchall()
-    results = []
+    if IS_POSTGRES:
+        rows = db_execute("", "SELECT * FROM reports ORDER BY generated_at DESC LIMIT $1",
+                         params_pg=[limit], fetch=True) or []
+    else:
+        rows = _run_sqlite("SELECT * FROM reports ORDER BY generated_at DESC LIMIT ?", [limit], fetch=True) or []
     for r in rows:
-        d = dict(r)
-        d["content"] = json.loads(d.get("content", "{}"))
-        d["sent_to"] = json.loads(d.get("sent_to", "[]"))
-        results.append(d)
-    return results
+        r["content"] = _parse_json_field(r.get("content"))
+        r["sent_to"] = _parse_json_field(r.get("sent_to"), "[]")
+    return rows
 
 
 # ─── Settings CRUD ───
 
-
 def get_setting(key: str, default: Any = None) -> Any:
-    with get_connection() as conn:
-        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    if IS_POSTGRES:
+        row = db_execute("", "SELECT value FROM settings WHERE key = $1", params_pg=[key], fetchone=True)
+    else:
+        row = _run_sqlite("SELECT value FROM settings WHERE key = ?", [key], fetchone=True)
     if row:
-        try:
-            return json.loads(row["value"])
-        except (json.JSONDecodeError, TypeError):
-            return row["value"]
+        return _parse_json_field(row["value"])
     return default
 
 
 def set_setting(key: str, value: Any):
     now = datetime.now(timezone.utc).isoformat()
     serialized = json.dumps(value) if not isinstance(value, str) else value
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
-            (key, serialized, now),
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = $3",
+            [key, serialized, now]
         )
+    else:
+        _run_sqlite(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+            [key, serialized, now]
+        )
+
+
+# ─── Audit Log CRUD ───
+
+def insert_audit_log(user_id: str = "system", username: str = "system", action: str = "", resource: str = "", details: dict = None, ip: str = ""):
+    details_val = json.dumps(details or {})
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO audit_logs (user_id, username, action, resource, details, ip) VALUES ($1,$2,$3,$4,$5,$6)",
+            [user_id, username, action, resource, details_val, ip]
+        )
+    else:
+        _run_sqlite(
+            "INSERT INTO audit_logs (user_id, username, action, resource, details, ip) VALUES (?,?,?,?,?,?)",
+            [user_id, username, action, resource, details_val, ip]
+        )
+
+
+def get_audit_logs(last_hours: int = 168, limit: int = 100) -> list[dict]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
+    if IS_POSTGRES:
+        rows = db_execute("", "SELECT * FROM audit_logs WHERE timestamp >= $1 ORDER BY timestamp DESC LIMIT $2",
+                         params_pg=[cutoff, limit], fetch=True) or []
+    else:
+        rows = _run_sqlite("SELECT * FROM audit_logs WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+                          [cutoff, limit], fetch=True) or []
+    for r in rows:
+        r["details"] = _parse_json_field(r.get("details"))
+    return rows
