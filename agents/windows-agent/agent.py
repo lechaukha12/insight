@@ -1,26 +1,29 @@
 """
-Insight Windows Agent - System Resource Monitoring Agent
+Insight Windows Agent - System Resource Monitoring Agent v5.1.0
 
 Monitors Windows server resources and sends data to Insight Core API:
 - CPU usage (total + per-core)
 - Memory usage (total, used, available)
 - Disk usage (per drive)
 - Network I/O
-- Uptime
-- Process count
-- Windows event log errors
+- Uptime / Process count
+- Process list with CPU/RAM per process (top 30)
+- Windows Event Log collection
+- System log collection
 
 Uses psutil (cross-platform) for metric collection.
 Can optionally use WMI for Windows-specific metrics.
 """
 
+import json
 import logging
 import os
 import platform
 import socket
+import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 
@@ -59,6 +62,16 @@ if platform.system() == "Windows":
         wmi_available = True
     except ImportError:
         logger.warning("wmi package not available - Windows event log collection disabled")
+
+# Optional win32evtlog
+win32evtlog_available = False
+if platform.system() == "Windows":
+    try:
+        import win32evtlog
+        import win32evtlogutil
+        win32evtlog_available = True
+    except ImportError:
+        logger.warning("pywin32 not available - using WMI for event logs")
 
 
 # ─── Core API Communication ───
@@ -142,40 +155,103 @@ def collect_all_metrics() -> list[dict]:
     return metrics
 
 
-def collect_windows_events() -> list[dict]:
-    """Collect recent Windows Event Log errors (requires wmi)."""
-    events = []
-    if not wmi_available:
-        return events
+# ─── Process List (NEW v5.1.0) ───
 
+
+def collect_process_list() -> list[dict]:
+    """Collect top 30 processes sorted by CPU usage."""
+    processes = []
     try:
-        c = wmi_module.WMI()
-        # Query recent error events from System and Application logs
-        for log_source in ["System", "Application"]:
+        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent',
+                                          'memory_info', 'status', 'cmdline', 'create_time']):
             try:
-                wql = (
-                    f"SELECT * FROM Win32_NTLogEvent "
-                    f"WHERE Logfile='{log_source}' AND EventType=1 "
-                    f"AND TimeWritten > '{(datetime.now() - __import__('datetime').timedelta(hours=1)).strftime('%Y%m%d%H%M%S')}.000000+000'"
-                )
-                for event in c.query(wql)[:20]:
-                    events.append({
-                        "level": "error",
-                        "title": f"Windows Event: {event.SourceName}",
-                        "message": (event.Message or "")[:500],
-                        "source": f"windows/{socket.gethostname()}",
-                        "details": {
-                            "event_id": event.EventCode,
-                            "log": log_source,
-                            "source_name": event.SourceName,
-                        },
-                    })
-            except Exception as e:
-                logger.debug(f"Failed to query {log_source} events: {e}")
+                info = proc.info
+                processes.append({
+                    "pid": info["pid"],
+                    "name": info["name"] or "unknown",
+                    "username": (info["username"] or "SYSTEM").split("\\")[-1],  # Remove domain prefix
+                    "cpu_percent": info["cpu_percent"] or 0.0,
+                    "memory_percent": round(info["memory_percent"] or 0.0, 1),
+                    "memory_mb": round((info["memory_info"].rss / 1048576) if info["memory_info"] else 0, 1),
+                    "status": info["status"] or "unknown",
+                    "command": " ".join(info["cmdline"][:5]) if info["cmdline"] else info["name"],
+                    "created": datetime.fromtimestamp(info["create_time"], tz=timezone.utc).isoformat() if info["create_time"] else None,
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
     except Exception as e:
-        logger.error(f"WMI query failed: {e}")
+        logger.error(f"Process collection error: {e}")
+
+    processes.sort(key=lambda x: x["cpu_percent"], reverse=True)
+    return processes[:30]
+
+
+# ─── System Log Collection (NEW v5.1.0) ───
+
+
+def collect_windows_events() -> list[dict]:
+    """Collect recent Windows Event Log errors."""
+    events = []
+
+    # Method 1: WMI
+    if wmi_available:
+        try:
+            c = wmi_module.WMI()
+            for log_source in ["System", "Application"]:
+                try:
+                    cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%Y%m%d%H%M%S")
+                    wql = (
+                        f"SELECT * FROM Win32_NTLogEvent "
+                        f"WHERE Logfile='{log_source}' AND EventType<=3 "
+                        f"AND TimeWritten > '{cutoff}.000000+000'"
+                    )
+                    for event in c.query(wql)[:20]:
+                        level = "critical" if event.EventType == 1 else "error" if event.EventType == 2 else "warning"
+                        events.append({
+                            "level": level,
+                            "source": f"{log_source}/{event.SourceName}",
+                            "message": (event.Message or "")[:500],
+                            "details": {
+                                "event_id": event.EventCode,
+                                "log": log_source,
+                                "source_name": event.SourceName,
+                            },
+                        })
+                except Exception as e:
+                    logger.debug(f"Failed to query {log_source} events: {e}")
+        except Exception as e:
+            logger.error(f"WMI query failed: {e}")
+
+    # Method 2: PowerShell fallback
+    elif platform.system() == "Windows":
+        try:
+            result = subprocess.run(
+                ["powershell", "-Command",
+                 "Get-EventLog -LogName System -EntryType Error,Warning -Newest 20 | "
+                 "Select-Object TimeGenerated,EntryType,Source,Message | "
+                 "ConvertTo-Json"],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                entries = json.loads(result.stdout)
+                if isinstance(entries, dict):
+                    entries = [entries]
+                for entry in entries:
+                    level = "error" if entry.get("EntryType") == 1 else "warning"
+                    events.append({
+                        "level": level,
+                        "source": f"System/{entry.get('Source', '')}",
+                        "message": (entry.get("Message", ""))[:500],
+                    })
+        except Exception as e:
+            logger.debug(f"PowerShell event query failed: {e}")
 
     return events
+
+
+def collect_system_logs() -> list[dict]:
+    """Collect system logs (Windows Event Log errors + warnings)."""
+    return collect_windows_events()
 
 
 def check_thresholds(metrics: list[dict]) -> list[dict]:
@@ -224,8 +300,6 @@ def run_scan():
     logger.info("Starting scan...")
     metrics = collect_all_metrics()
     events = check_thresholds(metrics)
-    win_events = collect_windows_events()
-    all_events = events + win_events
 
     if metrics:
         send_to_core("/api/v1/metrics", {
@@ -234,24 +308,42 @@ def run_scan():
             "metrics": metrics,
         })
 
-    if all_events:
+    if events:
         send_to_core("/api/v1/events", {
             "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
             "agent_type": "windows", "hostname": socket.gethostname(),
-            "events": all_events,
+            "events": events,
+        })
+
+    # Collect & send process list (NEW v5.1.0)
+    process_list = collect_process_list()
+    if process_list:
+        send_to_core("/api/v1/processes", {
+            "agent_id": AGENT_ID,
+            "processes": process_list,
+        })
+
+    # Collect & send system logs (NEW v5.1.0)
+    sys_logs = collect_system_logs()
+    if sys_logs:
+        send_to_core("/api/v1/logs", {
+            "agent_id": AGENT_ID, "agent_name": AGENT_NAME,
+            "agent_type": "windows", "hostname": socket.gethostname(),
+            "logs": sys_logs,
         })
 
     send_heartbeat()
-    logger.info(f"Scan complete: {len(metrics)} metrics, {len(all_events)} events")
+    logger.info(f"Scan complete: {len(metrics)} metrics, {len(events)} events, {len(process_list)} processes, {len(sys_logs)} logs")
 
 
 def main():
-    logger.info(f"Insight Windows Agent starting...")
+    logger.info(f"Insight Windows Agent v5.1.0 starting...")
     logger.info(f"   Agent ID: {AGENT_ID}")
     logger.info(f"   Hostname: {socket.gethostname()}")
     logger.info(f"   OS: {platform.system()} {platform.version()}")
     logger.info(f"   Core URL: {CORE_API_URL}")
     logger.info(f"   Scan Interval: {SCAN_INTERVAL}s")
+    logger.info(f"   WMI: {'available' if wmi_available else 'not available'}")
 
     daily_done_today = False
     last_scan_day = None

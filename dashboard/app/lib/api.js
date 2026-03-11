@@ -166,3 +166,17 @@ export async function getAuditLogs(params = {}) {
     const query = new URLSearchParams(params).toString();
     return fetchAPI(`/api/v1/audit?${query}`);
 }
+
+// ─── Processes ───
+
+export async function getProcesses(agentId) {
+    return fetchAPI(`/api/v1/processes?agent_id=${agentId}`);
+}
+
+// ─── Traces ───
+
+export async function getTraces(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return fetchAPI(`/api/v1/traces?${query}`);
+}
+

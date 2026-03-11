@@ -31,6 +31,8 @@ from shared.database.db import (
     save_rule, get_rules, delete_rule, toggle_rule,
     insert_audit_log, get_audit_logs,
     save_webhook, get_webhooks, delete_webhook, toggle_webhook,
+    save_process_snapshot, get_process_snapshot,
+    insert_traces, get_traces,
 )
 from api_gateway.auth import (
     hash_password, verify_password, create_token, verify_token,
@@ -527,6 +529,43 @@ async def check_metric_alerts(agent_id: str, metrics: list[dict]):
                         f"Agent {agent_id}: {name} = {value:.1f} ({op} {threshold})", f"rule:{rule['id']}")
                 except: pass
 
+# ─── Process Monitoring ───
+
+@app.post("/api/v1/processes", dependencies=[Depends(require_auth)])
+async def receive_processes(request: Request):
+    data = await request.json()
+    agent_id = data.get("agent_id")
+    processes = data.get("processes", [])
+    if not agent_id:
+        raise HTTPException(400, "agent_id required")
+    save_process_snapshot(agent_id, processes)
+    return {"status": "ok", "received": len(processes)}
+
+@app.get("/api/v1/processes", dependencies=[Depends(require_auth)])
+async def query_processes(agent_id: str = None):
+    if not agent_id:
+        raise HTTPException(400, "agent_id required")
+    result = get_process_snapshot(agent_id)
+    return result
+
+# ─── Traces ───
+
+@app.post("/api/v1/traces", dependencies=[Depends(require_auth)])
+async def receive_traces(request: Request):
+    data = await request.json()
+    agent_id = data.get("agent_id")
+    traces = data.get("traces", [])
+    if not agent_id:
+        raise HTTPException(400, "agent_id required")
+    insert_traces(agent_id, traces)
+    return {"status": "ok", "received": len(traces)}
+
+@app.get("/api/v1/traces", dependencies=[Depends(require_auth)])
+async def query_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100):
+    result = get_traces(agent_id=agent_id, last_hours=last_hours, limit=limit)
+    return {"traces": result, "total": len(result)}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+

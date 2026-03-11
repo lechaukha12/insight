@@ -133,6 +133,25 @@ CREATE TABLE IF NOT EXISTS webhooks (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS processes (
+    id SERIAL PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    snapshot JSONB NOT NULL DEFAULT '[]',
+    timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS traces (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    trace_id TEXT,
+    span_name TEXT,
+    service_name TEXT,
+    duration_ms DOUBLE PRECISION,
+    status TEXT DEFAULT 'ok',
+    attributes JSONB DEFAULT '{}',
+    timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value JSONB NOT NULL,
@@ -273,6 +292,25 @@ CREATE TABLE IF NOT EXISTS webhooks (
     events TEXT DEFAULT '["critical","error"]',
     enabled INTEGER DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS processes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    snapshot TEXT NOT NULL DEFAULT '[]',
+    timestamp TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS traces (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    trace_id TEXT,
+    span_name TEXT,
+    service_name TEXT,
+    duration_ms REAL,
+    status TEXT DEFAULT 'ok',
+    attributes TEXT DEFAULT '{}',
+    timestamp TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -1052,3 +1090,76 @@ def toggle_webhook(wh_id: str, enabled: bool):
         _run_pg("UPDATE webhooks SET enabled = $1 WHERE id = $2", [enabled, wh_id])
     else:
         _run_sqlite("UPDATE webhooks SET enabled = ? WHERE id = ?", [1 if enabled else 0, wh_id])
+
+
+# ─── Process Snapshots ───
+
+def save_process_snapshot(agent_id: str, processes: list[dict]):
+    """Save latest process snapshot for an agent (replace old one)."""
+    snapshot_val = json.dumps(processes)
+    if IS_POSTGRES:
+        _run_pg("DELETE FROM processes WHERE agent_id = $1", [agent_id])
+        _run_pg("INSERT INTO processes (agent_id, snapshot) VALUES ($1, $2)", [agent_id, snapshot_val])
+    else:
+        _run_sqlite("DELETE FROM processes WHERE agent_id = ?", [agent_id])
+        _run_sqlite("INSERT INTO processes (agent_id, snapshot) VALUES (?, ?)", [agent_id, snapshot_val])
+
+
+def get_process_snapshot(agent_id: str) -> list[dict]:
+    """Get latest process snapshot for an agent."""
+    if IS_POSTGRES:
+        rows = db_execute("", "SELECT snapshot, timestamp FROM processes WHERE agent_id = $1 ORDER BY timestamp DESC LIMIT 1",
+                         params_pg=[agent_id], fetch=True) or []
+    else:
+        rows = _run_sqlite("SELECT snapshot, timestamp FROM processes WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 1",
+                          [agent_id], fetch=True) or []
+    if rows:
+        return {"processes": _parse_json_field(rows[0].get("snapshot"), "[]"), "timestamp": rows[0].get("timestamp")}
+    return {"processes": [], "timestamp": None}
+
+
+# ─── Traces ───
+
+def insert_traces(agent_id: str, traces: list[dict]):
+    """Insert OTLP trace spans."""
+    for t in traces:
+        trace_id = t.get("trace_id", str(uuid.uuid4()))
+        span_id = t.get("span_id", str(uuid.uuid4()))
+        attrs_val = json.dumps(t.get("attributes", {}))
+        if IS_POSTGRES:
+            _run_pg(
+                "INSERT INTO traces (id, agent_id, trace_id, span_name, service_name, duration_ms, status, attributes) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+                [span_id, agent_id, trace_id, t.get("span_name",""), t.get("service_name",""),
+                 t.get("duration_ms",0), t.get("status","ok"), attrs_val]
+            )
+        else:
+            _run_sqlite(
+                "INSERT INTO traces (id, agent_id, trace_id, span_name, service_name, duration_ms, status, attributes) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                [span_id, agent_id, trace_id, t.get("span_name",""), t.get("service_name",""),
+                 t.get("duration_ms",0), t.get("status","ok"), attrs_val]
+            )
+
+
+def get_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100) -> list[dict]:
+    """Query traces."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
+    if IS_POSTGRES:
+        if agent_id:
+            rows = db_execute("", "SELECT * FROM traces WHERE agent_id = $1 AND timestamp >= $2 ORDER BY timestamp DESC LIMIT $3",
+                             params_pg=[agent_id, cutoff, limit], fetch=True) or []
+        else:
+            rows = db_execute("", "SELECT * FROM traces WHERE timestamp >= $1 ORDER BY timestamp DESC LIMIT $2",
+                             params_pg=[cutoff, limit], fetch=True) or []
+    else:
+        if agent_id:
+            rows = _run_sqlite("SELECT * FROM traces WHERE agent_id = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+                              [agent_id, cutoff, limit], fetch=True) or []
+        else:
+            rows = _run_sqlite("SELECT * FROM traces WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+                              [cutoff, limit], fetch=True) or []
+    for r in rows:
+        r["attributes"] = _parse_json_field(r.get("attributes"))
+    return rows
+

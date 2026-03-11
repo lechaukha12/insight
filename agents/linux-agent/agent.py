@@ -1,5 +1,5 @@
 """
-Insight Linux Agent - System Resource Monitoring Agent
+Insight Linux Agent - System Resource Monitoring Agent v5.1.0
 
 Monitors Linux server resources and sends data to Insight Core API:
 - CPU usage (total + per-core)
@@ -9,6 +9,8 @@ Monitors Linux server resources and sends data to Insight Core API:
 - Network I/O
 - Uptime
 - Process count
+- Process list with CPU/RAM per process (top 30)
+- System log collection (syslog/journald)
 
 Supports two modes:
 1. Real-time monitoring (every SCAN_INTERVAL seconds)
@@ -20,9 +22,11 @@ import logging
 import os
 import platform
 import socket
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 import requests
 
@@ -40,6 +44,11 @@ DAILY_SCAN_MINUTE = int(os.getenv("DAILY_SCAN_MINUTE", "45"))
 CPU_THRESHOLD = float(os.getenv("CPU_THRESHOLD", "90"))
 MEMORY_THRESHOLD = float(os.getenv("MEMORY_THRESHOLD", "90"))
 DISK_THRESHOLD = float(os.getenv("DISK_THRESHOLD", "95"))
+
+# Log collection config
+LOG_FILES = os.getenv("LOG_FILES", "/var/log/syslog,/var/log/messages,/var/log/auth.log").split(",")
+LOG_LINES = int(os.getenv("LOG_LINES", "50"))
+USE_JOURNALD = os.getenv("USE_JOURNALD", "auto")  # auto, true, false
 
 # Logging
 logging.basicConfig(
@@ -244,6 +253,139 @@ def collect_system_info() -> list[dict]:
     return metrics
 
 
+# ─── Process List (NEW v5.1.0) ───
+
+
+def collect_process_list() -> list[dict]:
+    """Collect top 30 processes sorted by CPU usage."""
+    processes = []
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent',
+                                          'memory_info', 'status', 'cmdline', 'create_time']):
+            try:
+                info = proc.info
+                processes.append({
+                    "pid": info["pid"],
+                    "name": info["name"] or "unknown",
+                    "username": info["username"] or "system",
+                    "cpu_percent": info["cpu_percent"] or 0.0,
+                    "memory_percent": round(info["memory_percent"] or 0.0, 1),
+                    "memory_mb": round((info["memory_info"].rss / 1048576) if info["memory_info"] else 0, 1),
+                    "status": info["status"] or "unknown",
+                    "command": " ".join(info["cmdline"][:5]) if info["cmdline"] else info["name"],
+                    "created": datetime.fromtimestamp(info["create_time"], tz=timezone.utc).isoformat() if info["create_time"] else None,
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as e:
+        logger.error(f"Process collection error: {e}")
+
+    # Sort by CPU usage descending, return top 30
+    processes.sort(key=lambda x: x["cpu_percent"], reverse=True)
+    return processes[:30]
+
+
+# ─── System Log Collection (NEW v5.1.0) ───
+
+_last_log_position = {}  # file -> position
+
+
+def _has_journald():
+    """Check if systemd-journald is available."""
+    try:
+        result = subprocess.run(["journalctl", "--version"], capture_output=True, timeout=5)
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _collect_journald_logs() -> list[dict]:
+    """Collect recent system logs from journald."""
+    logs = []
+    try:
+        result = subprocess.run(
+            ["journalctl", "--since", "5 minutes ago", "-p", "err..emerg",
+             "--no-pager", "-o", "json", "-n", str(LOG_LINES)],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n"):
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    priority = int(entry.get("PRIORITY", 6))
+                    level = "critical" if priority <= 2 else "error" if priority <= 3 else "warning" if priority <= 4 else "info"
+                    logs.append({
+                        "level": level,
+                        "source": entry.get("SYSLOG_IDENTIFIER", entry.get("_COMM", "system")),
+                        "message": entry.get("MESSAGE", ""),
+                        "timestamp": datetime.fromtimestamp(
+                            int(entry.get("__REALTIME_TIMESTAMP", 0)) / 1000000, tz=timezone.utc
+                        ).isoformat() if entry.get("__REALTIME_TIMESTAMP") else None,
+                    })
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except Exception as e:
+        logger.debug(f"journalctl failed: {e}")
+    return logs
+
+
+def _collect_file_logs() -> list[dict]:
+    """Collect recent error/warning lines from log files."""
+    logs = []
+    error_keywords = ["error", "fail", "critical", "panic", "fatal", "denied", "refused", "timeout"]
+
+    for log_file in LOG_FILES:
+        log_file = log_file.strip()
+        if not log_file or not Path(log_file).exists():
+            continue
+
+        try:
+            # Read from last position
+            last_pos = _last_log_position.get(log_file, 0)
+            with open(log_file, "r", errors="ignore") as f:
+                f.seek(0, 2)  # Seek to end
+                file_size = f.tell()
+
+                if last_pos > file_size:
+                    last_pos = 0  # File was rotated
+
+                # Read from last position or last 8KB
+                if last_pos == 0:
+                    start = max(0, file_size - 8192)
+                else:
+                    start = last_pos
+
+                f.seek(start)
+                lines = f.readlines()
+                _last_log_position[log_file] = f.tell()
+
+            # Filter for error/warning lines
+            for line in lines[-LOG_LINES:]:
+                line_lower = line.lower()
+                if any(kw in line_lower for kw in error_keywords):
+                    level = "critical" if any(w in line_lower for w in ["critical", "panic", "fatal"]) else \
+                            "error" if any(w in line_lower for w in ["error", "fail"]) else "warning"
+                    logs.append({
+                        "level": level,
+                        "source": Path(log_file).name,
+                        "message": line.strip()[:500],
+                    })
+        except (PermissionError, OSError) as e:
+            logger.debug(f"Cannot read {log_file}: {e}")
+
+    return logs
+
+
+def collect_system_logs() -> list[dict]:
+    """Collect system logs from journald or log files."""
+    use_jd = USE_JOURNALD.lower()
+    if use_jd == "true" or (use_jd == "auto" and _has_journald()):
+        return _collect_journald_logs()
+    return _collect_file_logs()
+
+
 # ─── Alert Logic ───
 
 
@@ -325,10 +467,29 @@ def run_scan():
             "events": events,
         })
 
+    # Collect & send process list
+    process_list = collect_process_list()
+    if process_list:
+        send_to_core("/api/v1/processes", {
+            "agent_id": AGENT_ID,
+            "processes": process_list,
+        })
+
+    # Collect & send system logs
+    sys_logs = collect_system_logs()
+    if sys_logs:
+        send_to_core("/api/v1/logs", {
+            "agent_id": AGENT_ID,
+            "agent_name": AGENT_NAME,
+            "agent_type": "linux",
+            "hostname": socket.gethostname(),
+            "logs": sys_logs,
+        })
+
     # Heartbeat
     send_heartbeat()
 
-    logger.info(f"Scan complete: {len(all_metrics)} metrics, {len(events)} events")
+    logger.info(f"Scan complete: {len(all_metrics)} metrics, {len(events)} events, {len(process_list)} processes, {len(sys_logs)} logs")
 
 
 def run_daily_scan():
@@ -350,13 +511,15 @@ def check_daily_schedule():
 
 
 def main():
-    logger.info(f"Insight Linux Agent starting...")
+    logger.info(f"Insight Linux Agent v5.1.0 starting...")
     logger.info(f"   Agent ID: {AGENT_ID}")
     logger.info(f"   Hostname: {socket.gethostname()}")
     logger.info(f"   OS: {platform.system()} {platform.release()}")
     logger.info(f"   Core URL: {CORE_API_URL}")
     logger.info(f"   Scan Interval: {SCAN_INTERVAL}s")
     logger.info(f"   Thresholds: CPU={CPU_THRESHOLD}%, RAM={MEMORY_THRESHOLD}%, Disk={DISK_THRESHOLD}%")
+    logger.info(f"   Log files: {LOG_FILES}")
+    logger.info(f"   Journald: {USE_JOURNALD}")
 
     daily_done_today = False
     last_scan_day = None
