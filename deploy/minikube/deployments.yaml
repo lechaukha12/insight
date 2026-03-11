@@ -18,8 +18,8 @@ spec:
     spec:
       containers:
         - name: api-gateway
-          image: insight-api:latest
-          imagePullPolicy: Never
+          image: lechaukha12/insight-api:v3.0.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           envFrom:
@@ -51,7 +51,8 @@ spec:
               memory: 512Mi
       volumes:
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: insight-data
 ---
 apiVersion: v1
 kind: Service
@@ -86,8 +87,8 @@ spec:
     spec:
       containers:
         - name: dashboard
-          image: insight-dashboard:latest
-          imagePullPolicy: Never
+          image: lechaukha12/insight-dashboard:v3.0.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
           env:
@@ -135,8 +136,8 @@ spec:
       serviceAccountName: insight-k8s-agent
       containers:
         - name: k8s-agent
-          image: insight-k8s-agent:latest
-          imagePullPolicy: Never
+          image: lechaukha12/insight-k8s-agent:v3.0.0
+          imagePullPolicy: IfNotPresent
           env:
             - name: INSIGHT_CORE_URL
               value: "http://insight-api:8080"
