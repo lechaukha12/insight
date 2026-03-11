@@ -123,6 +123,16 @@ CREATE TABLE IF NOT EXISTS reports (
     sent_to JSONB DEFAULT '[]'
 );
 
+CREATE TABLE IF NOT EXISTS webhooks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'custom',
+    events JSONB DEFAULT '["critical","error"]',
+    enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value JSONB NOT NULL,
@@ -253,6 +263,16 @@ CREATE TABLE IF NOT EXISTS reports (
     content TEXT DEFAULT '{}',
     generated_at TEXT DEFAULT (datetime('now')),
     sent_to TEXT DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS webhooks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'custom',
+    events TEXT DEFAULT '["critical","error"]',
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -961,3 +981,74 @@ def get_audit_logs(last_hours: int = 168, limit: int = 100) -> list[dict]:
     for r in rows:
         r["details"] = _parse_json_field(r.get("details"))
     return rows
+
+
+# ─── User Management ───
+
+def list_users() -> list[dict]:
+    if IS_POSTGRES:
+        rows = db_execute("", "SELECT id, username, role, created_at FROM users ORDER BY created_at DESC", fetch=True) or []
+    else:
+        rows = _run_sqlite("SELECT id, username, role, created_at FROM users ORDER BY created_at DESC", fetch=True) or []
+    return rows
+
+
+def update_user_password(user_id: str, new_password_hash: str):
+    if IS_POSTGRES:
+        _run_pg("UPDATE users SET password_hash = $1 WHERE id = $2", [new_password_hash, user_id])
+    else:
+        _run_sqlite("UPDATE users SET password_hash = ? WHERE id = ?", [new_password_hash, user_id])
+
+
+def delete_user(user_id: str):
+    if IS_POSTGRES:
+        _run_pg("DELETE FROM users WHERE id = $1", [user_id])
+    else:
+        _run_sqlite("DELETE FROM users WHERE id = ?", [user_id])
+
+
+# ─── Webhooks CRUD ───
+
+def save_webhook(name: str, url: str, wh_type: str = "custom", events: list[str] = None) -> dict:
+    wh_id = str(uuid.uuid4())
+    events_val = json.dumps(events or ["critical", "error"])
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO webhooks (id, name, url, type, events) VALUES ($1,$2,$3,$4,$5)",
+            [wh_id, name, url, wh_type, events_val]
+        )
+    else:
+        _run_sqlite(
+            "INSERT INTO webhooks (id, name, url, type, events) VALUES (?,?,?,?,?)",
+            [wh_id, name, url, wh_type, events_val]
+        )
+    return {"id": wh_id, "name": name, "url": url, "type": wh_type}
+
+
+def get_webhooks(enabled_only: bool = False) -> list[dict]:
+    if IS_POSTGRES:
+        q = "SELECT * FROM webhooks"
+        if enabled_only: q += " WHERE enabled = TRUE"
+        rows = db_execute("", q, fetch=True) or []
+    else:
+        q = "SELECT * FROM webhooks"
+        if enabled_only: q += " WHERE enabled = 1"
+        rows = _run_sqlite(q, fetch=True) or []
+    for r in rows:
+        r["events"] = _parse_json_field(r.get("events"), "[]")
+        r["enabled"] = bool(r.get("enabled", 0))
+    return rows
+
+
+def delete_webhook(wh_id: str):
+    if IS_POSTGRES:
+        _run_pg("DELETE FROM webhooks WHERE id = $1", [wh_id])
+    else:
+        _run_sqlite("DELETE FROM webhooks WHERE id = ?", [wh_id])
+
+
+def toggle_webhook(wh_id: str, enabled: bool):
+    if IS_POSTGRES:
+        _run_pg("UPDATE webhooks SET enabled = $1 WHERE id = $2", [enabled, wh_id])
+    else:
+        _run_sqlite("UPDATE webhooks SET enabled = ? WHERE id = ?", [1 if enabled else 0, wh_id])

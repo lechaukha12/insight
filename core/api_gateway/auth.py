@@ -1,14 +1,15 @@
 """
-Insight Monitoring System - Authentication Module
-JWT-based authentication for dashboard access.
-Uses bcrypt directly (passlib has compatibility issues with bcrypt v5+).
+Insight Monitoring System - Authentication Module v5.0.0
+JWT auth with RBAC (admin/operator/viewer).
 """
 
 import os
 import time
+from functools import wraps
 
 import bcrypt
 import jwt
+from fastapi import HTTPException, Request
 
 JWT_SECRET = os.getenv("JWT_SECRET", "insight-jwt-secret-key-change-in-production")
 JWT_ALGORITHM = "HS256"
@@ -16,6 +17,13 @@ JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
 
 DEFAULT_ADMIN_USER = os.getenv("ADMIN_USERNAME", "admin")
 DEFAULT_ADMIN_PASS = os.getenv("ADMIN_PASSWORD", "insight2024")
+
+# Role hierarchy: admin > operator > viewer
+ROLE_PERMISSIONS = {
+    "admin": ["admin", "operator", "viewer"],
+    "operator": ["operator", "viewer"],
+    "viewer": ["viewer"],
+}
 
 
 def hash_password(password: str) -> str:
@@ -41,24 +49,51 @@ def create_token(user_id: str, username: str, role: str = "admin") -> str:
 
 
 def verify_token(token: str) -> dict | None:
-    """Verify JWT token and return payload or None."""
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return payload
-    except jwt.ExpiredSignatureError:
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
-    except jwt.InvalidTokenError:
+
+
+async def get_current_user(request: Request) -> dict | None:
+    """Extract user from JWT token."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
         return None
+    payload = verify_token(auth_header[7:])
+    if not payload:
+        return None
+    return {"id": payload["sub"], "username": payload["username"], "role": payload.get("role", "viewer")}
+
+
+async def require_auth(request: Request) -> dict:
+    """Require valid JWT token."""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
+def require_role(allowed_roles: list[str]):
+    """Factory: create dependency that requires specific roles."""
+    async def _check(request: Request) -> dict:
+        user = await require_auth(request)
+        user_role = user.get("role", "viewer")
+        # Check if user's role grants access to any allowed role
+        user_perms = ROLE_PERMISSIONS.get(user_role, [])
+        if not any(r in user_perms for r in allowed_roles):
+            raise HTTPException(status_code=403, detail=f"Role '{user_role}' not authorized. Required: {allowed_roles}")
+        return user
+    return _check
 
 
 def ensure_default_admin():
     """Create default admin user if no users exist."""
     from shared.database.db import get_user_by_username, create_user
-    
     existing = get_user_by_username(DEFAULT_ADMIN_USER)
     if not existing:
         pw_hash = hash_password(DEFAULT_ADMIN_PASS)
         create_user(DEFAULT_ADMIN_USER, pw_hash, "admin")
-        print(f"[AUTH] Default admin user created: {DEFAULT_ADMIN_USER}")
+        print(f"[AUTH] Default admin created: {DEFAULT_ADMIN_USER}")
     else:
-        print(f"[AUTH] Admin user exists: {DEFAULT_ADMIN_USER}")
+        print(f"[AUTH] Admin exists: {DEFAULT_ADMIN_USER}")
