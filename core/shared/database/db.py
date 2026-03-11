@@ -254,6 +254,59 @@ def get_latest_metrics_per_agent() -> dict[str, list[dict]]:
     return result
 
 
+def get_metrics_timeseries(agent_id: str = None, last_hours: int = 6, metric_names: list[str] = None) -> list[dict]:
+    """Get metrics as time-series data, suitable for Recharts line charts."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
+    query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= ?"
+    params: list[Any] = [cutoff]
+
+    if agent_id:
+        query += " AND agent_id = ?"
+        params.append(agent_id)
+    if metric_names:
+        placeholders = ",".join("?" * len(metric_names))
+        query += f" AND metric_name IN ({placeholders})"
+        params.extend(metric_names)
+
+    query += " ORDER BY timestamp ASC"
+
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    # Group into time-series format: [{timestamp, cpu_percent, memory_percent, ...}]
+    time_map: dict[str, dict] = {}
+    for r in rows:
+        ts = r["timestamp"][:16]  # Truncate to minute precision
+        if ts not in time_map:
+            time_map[ts] = {"time": ts}
+        time_map[ts][r["metric_name"]] = round(r["metric_value"], 2)
+
+    return list(time_map.values())
+
+
+def get_event_counts_by_hour(last_hours: int = 24) -> list[dict]:
+    """Get event counts grouped by hour and level, for bar charts."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).isoformat()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT strftime('%Y-%m-%d %H:00', created_at) as hour,
+                      level, COUNT(*) as count
+               FROM events WHERE created_at >= ?
+               GROUP BY hour, level
+               ORDER BY hour ASC""",
+            (cutoff,),
+        ).fetchall()
+
+    hour_map: dict[str, dict] = {}
+    for r in rows:
+        h = r["hour"]
+        if h not in hour_map:
+            hour_map[h] = {"hour": h, "critical": 0, "error": 0, "warning": 0, "info": 0}
+        hour_map[h][r["level"]] = r["count"]
+
+    return list(hour_map.values())
+
+
 # ─── Events CRUD ───
 
 

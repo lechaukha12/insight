@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getDashboardSummary, generateReport } from './lib/api';
-import { timeAgo, formatDate } from './lib/hooks';
+import { timeAgo } from './lib/hooks';
+import { MetricsLineChart, EventsBarChart, HealthDonut } from './components/Charts';
 
 const levelIcons = { critical: 'C', error: 'E', warning: 'W', info: 'I' };
 
@@ -12,6 +13,7 @@ export default function DashboardPage() {
   const [error, setError] = useState(null);
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState(null);
+  const [chartHours, setChartHours] = useState(6);
 
   const fetchData = useCallback(async () => {
     try {
@@ -82,6 +84,7 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* Stats Grid */}
         <div className="stats-grid">
           <div className="stat-card">
             <div className="stat-icon agents">AG</div>
@@ -116,12 +119,56 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        {/* Charts Row */}
+        <div className="grid-2" style={{ marginBottom: '24px' }}>
+          {/* Metrics Chart */}
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">System Metrics</div>
+                <div className="card-subtitle">CPU / Memory / Disk usage</div>
+              </div>
+              <div className="header-actions">
+                {[3, 6, 12, 24].map(h => (
+                  <button
+                    key={h}
+                    className={`btn btn-sm ${chartHours === h ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setChartHours(h)}
+                  >
+                    {h}h
+                  </button>
+                ))}
+              </div>
+            </div>
+            <MetricsLineChart lastHours={chartHours} />
+          </div>
+
+          {/* Events Chart + Health Donut */}
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="card-title">Event Timeline</div>
+                <div className="card-subtitle">Events by severity (24h)</div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+              <div style={{ flex: 1 }}>
+                <EventsBarChart lastHours={24} height={220} />
+              </div>
+              <div style={{ flexShrink: 0 }}>
+                <HealthDonut agents={agents} size={130} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Agents + Events Tables */}
         <div className="grid-2">
           <div className="card">
             <div className="card-header">
               <div>
                 <div className="card-title">Agents</div>
-                <div className="card-subtitle">{agents.length} registered agents</div>
+                <div className="card-subtitle">{agents.length} registered</div>
               </div>
               <a href="/agents" className="btn btn-sm btn-secondary">View All</a>
             </div>
@@ -129,13 +176,10 @@ export default function DashboardPage() {
               <div className="empty-state">
                 <div className="empty-state-icon">--</div>
                 <div className="empty-state-text">No agents registered</div>
-                <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Deploy an agent to start monitoring</p>
               </div>
             ) : (
               <table className="data-table">
-                <thead>
-                  <tr><th>Name</th><th>Type</th><th>Status</th><th>Last Seen</th></tr>
-                </thead>
+                <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Last Seen</th></tr></thead>
                 <tbody>
                   {agents.slice(0, 5).map(agent => (
                     <tr key={agent.id}>
@@ -143,8 +187,7 @@ export default function DashboardPage() {
                       <td><span className="badge info">{agent.agent_type}</span></td>
                       <td>
                         <span className={`badge ${agent.status === 'active' ? 'active' : 'error'}`}>
-                          <span className="badge-dot" />
-                          {agent.status}
+                          <span className="badge-dot" />{agent.status}
                         </span>
                       </td>
                       <td>{timeAgo(agent.last_heartbeat)}</td>
@@ -167,11 +210,10 @@ export default function DashboardPage() {
               <div className="empty-state">
                 <div className="empty-state-icon">OK</div>
                 <div className="empty-state-text">No events</div>
-                <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>All systems operating normally</p>
               </div>
             ) : (
               <div>
-                {recentEvents.slice(0, 8).map((event, i) => (
+                {recentEvents.slice(0, 6).map((event, i) => (
                   <div key={event.id || i} className="event-item">
                     <div className={`event-icon ${event.level}`}>
                       {levelIcons[event.level] || 'I'}

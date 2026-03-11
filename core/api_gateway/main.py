@@ -27,6 +27,8 @@ from shared.database.db import (
     insert_metrics,
     get_metrics,
     get_latest_metrics_per_agent,
+    get_metrics_timeseries,
+    get_event_counts_by_hour,
     insert_events,
     get_events,
     get_event_counts,
@@ -69,7 +71,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Insight Monitoring System",
     description="Central monitoring platform for multi-agent infrastructure monitoring",
-    version="1.0.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -188,6 +190,26 @@ async def query_metrics(
 ):
     data = get_metrics(agent_id=agent_id, metric_name=metric_name, last_hours=last_hours, limit=limit)
     return {"metrics": data, "total": len(data)}
+
+
+# ─── Chart Data Routes ───
+
+
+@app.get("/api/v1/charts/metrics")
+async def chart_metrics(
+    agent_id: str = Query(None),
+    last_hours: int = Query(6),
+    metric_names: str = Query(None),
+):
+    names = metric_names.split(",") if metric_names else None
+    data = get_metrics_timeseries(agent_id=agent_id, last_hours=last_hours, metric_names=names)
+    return {"timeseries": data, "points": len(data)}
+
+
+@app.get("/api/v1/charts/events")
+async def chart_events(last_hours: int = Query(24)):
+    data = get_event_counts_by_hour(last_hours=last_hours)
+    return {"timeseries": data, "hours": len(data)}
 
 
 # ─── Events Routes ───

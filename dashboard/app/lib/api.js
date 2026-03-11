@@ -47,7 +47,16 @@ export async function getMetrics(params = {}) {
     return fetchAPI(`/api/v1/metrics?${query}`);
 }
 
-// ─── Events ───
+export async function getChartMetrics(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return fetchAPI(`/api/v1/charts/metrics?${query}`);
+}
+
+export async function getChartEvents(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return fetchAPI(`/api/v1/charts/events?${query}`);
+}
+
 
 export async function getEvents(params = {}) {
     const query = new URLSearchParams(params).toString();
