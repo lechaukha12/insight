@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: api-gateway
-          image: lechaukha12/insight-api:v5.0.0
+          image: lechaukha12/insight-api:v5.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -87,7 +87,7 @@ spec:
     spec:
       containers:
         - name: dashboard
-          image: lechaukha12/insight-dashboard:v5.0.0
+          image: lechaukha12/insight-dashboard:v5.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
@@ -136,7 +136,7 @@ spec:
       serviceAccountName: insight-k8s-agent
       containers:
         - name: k8s-agent
-          image: lechaukha12/insight-k8s-agent:v5.0.0
+          image: lechaukha12/insight-k8s-agent:v5.1.0
           imagePullPolicy: IfNotPresent
           env:
             - name: INSIGHT_CORE_URL
@@ -152,3 +152,55 @@ spec:
               cpu: 200m
               memory: 256Mi
       restartPolicy: Always
+---
+# ─── OpenTelemetry Agent Deployment (NEW v5.1.0) ───
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insight-otel-agent
+  namespace: insight-system
+  labels:
+    app: insight-otel-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: insight-otel-agent
+  template:
+    metadata:
+      labels:
+        app: insight-otel-agent
+    spec:
+      containers:
+        - name: otel-agent
+          image: lechaukha12/insight-otel-agent:v5.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 4318
+          env:
+            - name: INSIGHT_CORE_URL
+              value: "http://insight-api:8080"
+          envFrom:
+            - configMapRef:
+                name: insight-config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: insight-otel-agent
+  namespace: insight-system
+spec:
+  selector:
+    app: insight-otel-agent
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+  type: ClusterIP
