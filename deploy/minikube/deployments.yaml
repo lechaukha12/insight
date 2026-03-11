@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: api-gateway
-          image: lechaukha12/insight-api:v3.0.0
+          image: lechaukha12/insight-api:v4.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -87,7 +87,7 @@ spec:
     spec:
       containers:
         - name: dashboard
-          image: lechaukha12/insight-dashboard:v3.0.0
+          image: lechaukha12/insight-dashboard:v4.0.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
@@ -136,7 +136,7 @@ spec:
       serviceAccountName: insight-k8s-agent
       containers:
         - name: k8s-agent
-          image: lechaukha12/insight-k8s-agent:v3.0.0
+          image: lechaukha12/insight-k8s-agent:v4.0.0
           imagePullPolicy: IfNotPresent
           env:
             - name: INSIGHT_CORE_URL
