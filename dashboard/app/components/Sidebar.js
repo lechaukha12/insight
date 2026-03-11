@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
@@ -30,7 +31,14 @@ export default function Sidebar() {
     return (
         <aside className="sidebar">
             <div className="sidebar-brand">
-                <div className="sidebar-brand-icon">🔍</div>
+                <Image
+                    src="/images/logo.png"
+                    alt="Insight Logo"
+                    width={42}
+                    height={42}
+                    className="sidebar-brand-logo"
+                    priority
+                />
                 <h1>INSIGHT</h1>
             </div>
             <nav className="sidebar-nav">
@@ -48,8 +56,14 @@ export default function Sidebar() {
                     </div>
                 ))}
             </nav>
-            <div style={{ padding: '16px 24px', borderTop: '1px solid var(--border-color)', fontSize: '12px', color: 'var(--text-muted)' }}>
-                Insight v1.0.0
+            <div style={{
+                padding: '16px 24px',
+                borderTop: '1px solid var(--border-color)',
+                fontSize: '11px',
+                color: 'var(--text-muted)',
+                letterSpacing: '0.5px',
+            }}>
+                Insight v2.0.0
             </div>
         </aside>
     );
