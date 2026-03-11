@@ -46,19 +46,15 @@ export default function ReportsPage() {
 
     return (
         <>
-            <div className="main-header">
-                <h2>Reports</h2>
-            </div>
+            <div className="main-header"><h2>Reports</h2></div>
             <div className="main-body">
-                {/* Generate Report */}
                 <div className="card" style={{ marginBottom: '24px' }}>
                     <div className="card-header">
-                        <div className="card-title">📤 Gửi Báo cáo</div>
+                        <div className="card-title">Send Report</div>
                     </div>
                     <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginBottom: '16px' }}>
-                        Tạo báo cáo tổng hợp từ tất cả dữ liệu hiện có và gửi qua các kênh đã chọn.
+                        Generate a summary report from current data and send via selected channels.
                     </p>
-
                     <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
                         {['telegram', 'email', 'webhook'].map(ch => (
                             <label key={ch} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
@@ -66,18 +62,15 @@ export default function ReportsPage() {
                                     type="checkbox"
                                     checked={selectedChannels.includes(ch)}
                                     onChange={() => toggleChannel(ch)}
-                                    style={{ accentColor: 'var(--accent-primary)' }}
+                                    style={{ accentColor: 'var(--blue)' }}
                                 />
-                                <span style={{ fontSize: '14px', textTransform: 'capitalize' }}>
-                                    {ch === 'telegram' ? '📱 Telegram' : ch === 'email' ? '📧 Email' : '🔗 Webhook'}
-                                </span>
+                                <span style={{ fontSize: '14px', textTransform: 'capitalize' }}>{ch}</span>
                             </label>
                         ))}
                     </div>
-
                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                         <button className="btn btn-primary" onClick={handleGenerate} disabled={sending || selectedChannels.length === 0}>
-                            {sending ? <><div className="loading-spinner" /> Generating...</> : '📊 Generate & Send Report'}
+                            {sending ? <><div className="loading-spinner" /> Generating...</> : 'Generate & Send Report'}
                         </button>
                         {sendResult && (
                             <span style={{ fontSize: '13px', color: sendResult.success ? 'var(--color-success)' : 'var(--color-error)' }}>
@@ -87,7 +80,6 @@ export default function ReportsPage() {
                     </div>
                 </div>
 
-                {/* Report History */}
                 <div className="card">
                     <div className="card-header">
                         <div className="card-title">Report History</div>
@@ -96,18 +88,13 @@ export default function ReportsPage() {
                         <div className="loading-overlay"><div className="loading-spinner" /></div>
                     ) : reports.length === 0 ? (
                         <div className="empty-state">
-                            <div className="empty-state-icon">📋</div>
+                            <div className="empty-state-icon">--</div>
                             <div className="empty-state-text">No reports generated yet</div>
                         </div>
                     ) : (
                         <table className="data-table">
                             <thead>
-                                <tr>
-                                    <th>Type</th>
-                                    <th>Generated</th>
-                                    <th>Sent To</th>
-                                    <th>Summary</th>
-                                </tr>
+                                <tr><th>Type</th><th>Generated</th><th>Sent To</th><th>Summary</th></tr>
                             </thead>
                             <tbody>
                                 {reports.map((report, i) => (
@@ -122,11 +109,7 @@ export default function ReportsPage() {
                                         </td>
                                         <td style={{ fontSize: '13px' }}>
                                             {report.content?.summary ? (
-                                                <>
-                                                    Agents: {report.content.summary.total_agents} |
-                                                    Events: {report.content.summary.total_events} |
-                                                    Critical: {report.content.summary.critical_events}
-                                                </>
+                                                <>Agents: {report.content.summary.total_agents} | Events: {report.content.summary.total_events} | Critical: {report.content.summary.critical_events}</>
                                             ) : '—'}
                                         </td>
                                     </tr>

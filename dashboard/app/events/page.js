@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { getEvents, acknowledgeEvent } from '../lib/api';
 import { timeAgo } from '../lib/hooks';
 
+const levelIcons = { critical: 'C', error: 'E', warning: 'W', info: 'I' };
+
 export default function EventsPage() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -38,7 +40,6 @@ export default function EventsPage() {
     };
 
     const events = data?.events || [];
-    const levelIcon = { critical: '🔴', error: '❌', warning: '⚠️', info: 'ℹ️' };
 
     return (
         <>
@@ -51,7 +52,7 @@ export default function EventsPage() {
                             className={`btn btn-sm ${filter === level ? 'btn-primary' : 'btn-secondary'}`}
                             onClick={() => { setFilter(level); setLoading(true); }}
                         >
-                            {level === 'all' ? 'All' : `${levelIcon[level]} ${level}`}
+                            {level === 'all' ? 'All' : level}
                         </button>
                     ))}
                 </div>
@@ -61,7 +62,7 @@ export default function EventsPage() {
                     <div className="loading-overlay"><div className="loading-spinner" /><span>Loading events...</span></div>
                 ) : events.length === 0 ? (
                     <div className="empty-state">
-                        <div className="empty-state-icon">✅</div>
+                        <div className="empty-state-icon">OK</div>
                         <div className="empty-state-text">No events found</div>
                     </div>
                 ) : (
@@ -72,7 +73,7 @@ export default function EventsPage() {
                         {events.map((event, i) => (
                             <div key={event.id || i} className="event-item">
                                 <div className={`event-icon ${event.level}`}>
-                                    {levelIcon[event.level] || '📋'}
+                                    {levelIcons[event.level] || 'I'}
                                 </div>
                                 <div className="event-content">
                                     <div className="event-title">
@@ -82,7 +83,7 @@ export default function EventsPage() {
                                     <div className="event-message">{event.message}</div>
                                     {event.namespace && (
                                         <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                                            📍 {event.namespace} / {event.resource || '—'} &nbsp;|&nbsp; Source: {event.source || '—'}
+                                            {event.namespace} / {event.resource || '—'} | Source: {event.source || '—'}
                                         </div>
                                     )}
                                 </div>
@@ -90,7 +91,7 @@ export default function EventsPage() {
                                     <div className="event-time">{timeAgo(event.created_at)}</div>
                                     {!event.acknowledged && (
                                         <button className="btn btn-sm btn-secondary" onClick={() => handleAcknowledge(event.id)}>
-                                            ✓ Ack
+                                            Ack
                                         </button>
                                     )}
                                 </div>

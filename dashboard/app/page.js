@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { getDashboardSummary, generateReport } from './lib/api';
 import { timeAgo, formatDate } from './lib/hooks';
 
+const levelIcons = { critical: 'C', error: 'E', warning: 'W', info: 'I' };
+
 export default function DashboardPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -25,7 +27,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 15000); // refresh every 15s
+    const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -45,14 +47,9 @@ export default function DashboardPage() {
   if (loading) {
     return (
       <>
-        <div className="main-header">
-          <h2>Dashboard</h2>
-        </div>
+        <div className="main-header"><h2>Dashboard</h2></div>
         <div className="main-body">
-          <div className="loading-overlay">
-            <div className="loading-spinner" />
-            <span>Loading dashboard...</span>
-          </div>
+          <div className="loading-overlay"><div className="loading-spinner" /><span>Loading dashboard...</span></div>
         </div>
       </>
     );
@@ -73,7 +70,7 @@ export default function DashboardPage() {
             </span>
           )}
           <button className="btn btn-primary" onClick={handleSendReport} disabled={sending}>
-            {sending ? <><div className="loading-spinner" /> Sending...</> : '📤 Gửi Báo cáo'}
+            {sending ? <><div className="loading-spinner" /> Sending...</> : 'Send Report'}
           </button>
         </div>
       </div>
@@ -81,35 +78,34 @@ export default function DashboardPage() {
       <div className="main-body">
         {error && (
           <div style={{ background: 'var(--color-error-bg)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 'var(--radius)', padding: '12px 16px', marginBottom: '24px', color: 'var(--color-error)', fontSize: '14px' }}>
-            ⚠️ Cannot connect to API: {error}. Data shown may be stale.
+            Cannot connect to API: {error}. Data shown may be stale.
           </div>
         )}
 
-        {/* Stats Grid */}
         <div className="stats-grid">
           <div className="stat-card">
-            <div className="stat-icon agents">🤖</div>
+            <div className="stat-icon agents">AG</div>
             <div className="stat-info">
               <div className="stat-value">{summary.total_agents || 0}</div>
               <div className="stat-label">Total Agents</div>
             </div>
           </div>
           <div className="stat-card">
-            <div className="stat-icon active">✅</div>
+            <div className="stat-icon active">ON</div>
             <div className="stat-info">
               <div className="stat-value">{summary.active_agents || 0}</div>
               <div className="stat-label">Active Agents</div>
             </div>
           </div>
           <div className="stat-card">
-            <div className="stat-icon warnings">⚡</div>
+            <div className="stat-icon warnings">EV</div>
             <div className="stat-info">
               <div className="stat-value">{summary.total_events_24h || 0}</div>
               <div className="stat-label">Events (24h)</div>
             </div>
           </div>
           <div className="stat-card">
-            <div className="stat-icon critical">🔴</div>
+            <div className="stat-icon critical">AL</div>
             <div className="stat-info">
               <div className="stat-value">{summary.critical_alerts || 0}</div>
               <div className="stat-label">Critical Alerts</div>
@@ -120,32 +116,25 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Two columns: Agents + Events */}
         <div className="grid-2">
-          {/* Agents */}
           <div className="card">
             <div className="card-header">
               <div>
                 <div className="card-title">Agents</div>
                 <div className="card-subtitle">{agents.length} registered agents</div>
               </div>
-              <a href="/agents" className="btn btn-sm btn-secondary">View All →</a>
+              <a href="/agents" className="btn btn-sm btn-secondary">View All</a>
             </div>
             {agents.length === 0 ? (
               <div className="empty-state">
-                <div className="empty-state-icon">🤖</div>
+                <div className="empty-state-icon">--</div>
                 <div className="empty-state-text">No agents registered</div>
                 <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Deploy an agent to start monitoring</p>
               </div>
             ) : (
               <table className="data-table">
                 <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Last Seen</th>
-                  </tr>
+                  <tr><th>Name</th><th>Type</th><th>Status</th><th>Last Seen</th></tr>
                 </thead>
                 <tbody>
                   {agents.slice(0, 5).map(agent => (
@@ -166,18 +155,17 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Recent Events */}
           <div className="card">
             <div className="card-header">
               <div>
                 <div className="card-title">Recent Events</div>
                 <div className="card-subtitle">Last 24 hours</div>
               </div>
-              <a href="/events" className="btn btn-sm btn-secondary">View All →</a>
+              <a href="/events" className="btn btn-sm btn-secondary">View All</a>
             </div>
             {recentEvents.length === 0 ? (
               <div className="empty-state">
-                <div className="empty-state-icon">✅</div>
+                <div className="empty-state-icon">OK</div>
                 <div className="empty-state-text">No events</div>
                 <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>All systems operating normally</p>
               </div>
@@ -186,7 +174,7 @@ export default function DashboardPage() {
                 {recentEvents.slice(0, 8).map((event, i) => (
                   <div key={event.id || i} className="event-item">
                     <div className={`event-icon ${event.level}`}>
-                      {event.level === 'critical' ? '🔴' : event.level === 'error' ? '❌' : event.level === 'warning' ? '⚠️' : 'ℹ️'}
+                      {levelIcons[event.level] || 'I'}
                     </div>
                     <div className="event-content">
                       <div className="event-title">{event.title}</div>

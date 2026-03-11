@@ -32,7 +32,7 @@ export default function AgentsPage() {
             <div className="main-header">
                 <h2>Agents</h2>
                 <div className="header-actions">
-                    <button className="btn btn-secondary" onClick={fetchData}>🔄 Refresh</button>
+                    <button className="btn btn-secondary" onClick={fetchData}>Refresh</button>
                 </div>
             </div>
             <div className="main-body">
@@ -40,7 +40,7 @@ export default function AgentsPage() {
                     <div className="loading-overlay"><div className="loading-spinner" /><span>Loading agents...</span></div>
                 ) : agents.length === 0 ? (
                     <div className="empty-state">
-                        <div className="empty-state-icon">🤖</div>
+                        <div className="empty-state-icon">--</div>
                         <div className="empty-state-text">No agents registered yet</div>
                         <p style={{ color: 'var(--text-muted)', fontSize: '14px', maxWidth: '400px', margin: '8px auto' }}>
                             Deploy an Insight agent on your K8s cluster, Linux server, or Windows machine to start monitoring.
@@ -51,12 +51,8 @@ export default function AgentsPage() {
                         <table className="data-table">
                             <thead>
                                 <tr>
-                                    <th>Name</th>
-                                    <th>Type</th>
-                                    <th>Hostname</th>
-                                    <th>Status</th>
-                                    <th>Last Heartbeat</th>
-                                    <th>Created</th>
+                                    <th>Name</th><th>Type</th><th>Hostname</th>
+                                    <th>Status</th><th>Last Heartbeat</th><th>Created</th>
                                 </tr>
                             </thead>
                             <tbody>

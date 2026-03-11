@@ -32,7 +32,7 @@ export default function LogsPage() {
             <div className="main-header">
                 <h2>Error Logs</h2>
                 <div className="header-actions">
-                    <button className="btn btn-secondary" onClick={fetchData}>🔄 Refresh</button>
+                    <button className="btn btn-secondary" onClick={fetchData}>Refresh</button>
                 </div>
             </div>
             <div className="main-body">
@@ -40,7 +40,7 @@ export default function LogsPage() {
                     <div className="loading-overlay"><div className="loading-spinner" /><span>Loading logs...</span></div>
                 ) : logs.length === 0 ? (
                     <div className="empty-state">
-                        <div className="empty-state-icon">✅</div>
+                        <div className="empty-state-icon">OK</div>
                         <div className="empty-state-text">No error logs</div>
                         <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>All pods are running without errors</p>
                     </div>
@@ -52,12 +52,8 @@ export default function LogsPage() {
                         <table className="data-table">
                             <thead>
                                 <tr>
-                                    <th>Namespace</th>
-                                    <th>Pod</th>
-                                    <th>Container</th>
-                                    <th>Level</th>
-                                    <th>Message</th>
-                                    <th>Time</th>
+                                    <th>Namespace</th><th>Pod</th><th>Container</th>
+                                    <th>Level</th><th>Message</th><th>Time</th>
                                 </tr>
                             </thead>
                             <tbody>

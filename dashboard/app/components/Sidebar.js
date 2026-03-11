@@ -7,20 +7,20 @@ import { usePathname } from 'next/navigation';
 const navItems = [
     {
         section: 'Overview', items: [
-            { href: '/', icon: '📊', label: 'Dashboard' },
+            { href: '/', label: 'Dashboard' },
         ]
     },
     {
         section: 'Monitoring', items: [
-            { href: '/agents', icon: '🤖', label: 'Agents' },
-            { href: '/events', icon: '⚡', label: 'Events & Alerts' },
-            { href: '/logs', icon: '📝', label: 'Error Logs' },
+            { href: '/agents', label: 'Agents' },
+            { href: '/events', label: 'Events & Alerts' },
+            { href: '/logs', label: 'Error Logs' },
         ]
     },
     {
         section: 'Actions', items: [
-            { href: '/reports', icon: '📋', label: 'Reports' },
-            { href: '/settings', icon: '⚙️', label: 'Settings' },
+            { href: '/reports', label: 'Reports' },
+            { href: '/settings', label: 'Settings' },
         ]
     },
 ];
@@ -48,7 +48,6 @@ export default function Sidebar() {
                         {section.items.map(item => (
                             <Link key={item.href} href={item.href}>
                                 <div className={`sidebar-nav-item ${pathname === item.href ? 'active' : ''}`}>
-                                    <span className="sidebar-nav-icon">{item.icon}</span>
                                     <span>{item.label}</span>
                                 </div>
                             </Link>
@@ -63,7 +62,7 @@ export default function Sidebar() {
                 color: 'var(--text-muted)',
                 letterSpacing: '0.5px',
             }}>
-                Insight v2.0.0
+                Insight v2.1.0
             </div>
         </aside>
     );

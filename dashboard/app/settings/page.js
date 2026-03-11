@@ -44,38 +44,8 @@ export default function SettingsPage() {
         }
     };
 
-    const handleAddEmail = async () => {
-        setSaving(true);
-        try {
-            await createAlertConfig({
-                channel: 'email',
-                config: {
-                    smtp_host: newConfig.smtp_host || '',
-                    smtp_port: parseInt(newConfig.smtp_port || '587'),
-                    username: newConfig.email_user || '',
-                    password: newConfig.email_pass || '',
-                    from_addr: newConfig.from_addr || '',
-                    to_addrs: (newConfig.to_addrs || '').split(',').map(s => s.trim()),
-                },
-                enabled: true,
-                alert_levels: ['critical', 'error'],
-            });
-            setMessage({ type: 'success', text: 'Email config added!' });
-            fetchData();
-        } catch (err) {
-            setMessage({ type: 'error', text: err.message });
-        } finally {
-            setSaving(false);
-        }
-    };
-
     const handleDelete = async (id) => {
-        try {
-            await deleteAlertConfig(id);
-            fetchData();
-        } catch (err) {
-            console.error(err);
-        }
+        try { await deleteAlertConfig(id); fetchData(); } catch (err) { console.error(err); }
     };
 
     const handleAutoReportToggle = async () => {
@@ -98,9 +68,7 @@ export default function SettingsPage() {
 
     return (
         <>
-            <div className="main-header">
-                <h2>Settings</h2>
-            </div>
+            <div className="main-header"><h2>Settings</h2></div>
             <div className="main-body">
                 {message && (
                     <div style={{
@@ -114,10 +82,9 @@ export default function SettingsPage() {
                 )}
 
                 <div className="grid-2">
-                    {/* Alert Channels */}
                     <div className="card">
                         <div className="card-header">
-                            <div className="card-title">🔔 Kênh Cảnh báo</div>
+                            <div className="card-title">Alert Channels</div>
                         </div>
 
                         {configs.length > 0 && (
@@ -127,9 +94,6 @@ export default function SettingsPage() {
                                         display: 'flex', alignItems: 'center', gap: '12px', padding: '12px',
                                         background: 'var(--bg-input)', borderRadius: 'var(--radius-sm)', marginBottom: '8px',
                                     }}>
-                                        <span style={{ fontSize: '20px' }}>
-                                            {cfg.channel === 'telegram' ? '📱' : cfg.channel === 'email' ? '📧' : '🔗'}
-                                        </span>
                                         <div style={{ flex: 1 }}>
                                             <div style={{ fontWeight: 600, textTransform: 'capitalize' }}>{cfg.channel}</div>
                                             <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
@@ -137,7 +101,7 @@ export default function SettingsPage() {
                                             </div>
                                         </div>
                                         <span className={`badge ${cfg.enabled ? 'active' : 'inactive'}`}>{cfg.enabled ? 'Active' : 'Off'}</span>
-                                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(cfg.id)}>🗑</button>
+                                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(cfg.id)}>Delete</button>
                                     </div>
                                 ))}
                             </div>
@@ -165,17 +129,16 @@ export default function SettingsPage() {
                         </div>
                     </div>
 
-                    {/* Auto Report Settings */}
                     <div className="card">
                         <div className="card-header">
-                            <div className="card-title">📊 Báo cáo Tự động</div>
+                            <div className="card-title">Auto Reports</div>
                         </div>
 
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
                             <div>
                                 <div style={{ fontWeight: 600 }}>Auto Daily Report</div>
                                 <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-                                    Gửi báo cáo tự động mỗi ngày lúc 7:45 AM
+                                    Send automatic report daily at 7:45 AM
                                 </div>
                             </div>
                             <label className="toggle">
@@ -193,7 +156,7 @@ export default function SettingsPage() {
                                 style={{ fontFamily: 'monospace' }}
                             />
                             <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                                7:45 AM UTC+7 hàng ngày
+                                7:45 AM UTC+7 daily
                             </div>
                         </div>
 
@@ -201,7 +164,7 @@ export default function SettingsPage() {
                             <label className="form-label">Alert Dedup (minutes)</label>
                             <input className="form-input" type="number" value={settings.alert_dedup_minutes || 5} readOnly />
                             <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                                Không gửi cùng alert trong khoảng thời gian này
+                                Suppress duplicate alerts within this window
                             </div>
                         </div>
 
