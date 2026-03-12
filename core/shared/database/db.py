@@ -744,11 +744,17 @@ def insert_metrics(agent_id: str, metrics: list[dict]):
 def get_metrics(agent_id: str = None, metric_name: str = None, last_hours: int = 24, limit: int = 1000) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
-        query = f"SELECT * FROM metrics WHERE timestamp >= '{cutoff}'"
-        if agent_id: query += f" AND agent_id = '{agent_id}'"
-        if metric_name: query += f" AND metric_name = '{metric_name}'"
-        query += f" ORDER BY timestamp DESC LIMIT {limit}"
-        rows = _run_clickhouse(query, fetch=True) or []
+        query = "SELECT * FROM metrics WHERE timestamp >= {cutoff:String}"
+        params = {"cutoff": cutoff}
+        if agent_id:
+            query += " AND agent_id = {agent_id:String}"
+            params["agent_id"] = agent_id
+        if metric_name:
+            query += " AND metric_name = {metric_name:String}"
+            params["metric_name"] = metric_name
+        query += " ORDER BY timestamp DESC LIMIT {lim:UInt32}"
+        params["lim"] = limit
+        rows = _run_clickhouse(query, params=params, fetch=True) or []
     elif IS_POSTGRES:
         query = "SELECT * FROM metrics WHERE timestamp >= $1"
         params = [cutoff]; idx = 2
@@ -797,13 +803,18 @@ def get_metrics_timeseries(agent_id: str = None, last_hours: int = 6, metric_nam
     """Get metrics as time-series data for Recharts."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
-        query = f"SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= '{cutoff}'"
-        if agent_id: query += f" AND agent_id = '{agent_id}'"
+        query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= {cutoff:String}"
+        params = {"cutoff": cutoff}
+        if agent_id:
+            query += " AND agent_id = {agent_id:String}"
+            params["agent_id"] = agent_id
         if metric_names:
-            names_str = ", ".join(f"'{n}'" for n in metric_names)
-            query += f" AND metric_name IN ({names_str})"
+            for i, n in enumerate(metric_names):
+                params[f"mn_{i}"] = n
+            placeholders = ", ".join(f"{{mn_{i}:String}}" for i in range(len(metric_names)))
+            query += f" AND metric_name IN ({placeholders})"
         query += " ORDER BY timestamp ASC"
-        rows = _run_clickhouse(query, fetch=True) or []
+        rows = _run_clickhouse(query, params=params, fetch=True) or []
     elif IS_POSTGRES:
         query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= $1"
         params = [cutoff]; idx = 2
@@ -839,11 +850,11 @@ def get_event_counts_by_hour(last_hours: int = 24) -> list[dict]:
     """Get event counts grouped by hour and level."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
-        query = f"""SELECT formatDateTime(created_at, '%Y-%m-%d %H:00') as hour,
+        query = """SELECT formatDateTime(created_at, '%Y-%m-%d %H:00') as hour,
                           level, count() as count
-                   FROM events WHERE created_at >= '{cutoff}'
+                   FROM events WHERE created_at >= {cutoff:String}
                    GROUP BY hour, level ORDER BY hour ASC"""
-        rows = _run_clickhouse(query, fetch=True) or []
+        rows = _run_clickhouse(query, params={"cutoff": cutoff}, fetch=True) or []
     elif IS_POSTGRES:
         query = """SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as hour,
                           level, COUNT(*) as count
@@ -899,11 +910,17 @@ def insert_events(agent_id: str, events: list[dict]):
 def get_events(agent_id: str = None, level: str = None, last_hours: int = 24, limit: int = 200) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
-        query = f"SELECT * FROM events WHERE created_at >= '{cutoff}'"
-        if agent_id: query += f" AND agent_id = '{agent_id}'"
-        if level: query += f" AND level = '{level}'"
-        query += f" ORDER BY created_at DESC LIMIT {limit}"
-        rows = _run_clickhouse(query, fetch=True) or []
+        query = "SELECT * FROM events WHERE created_at >= {cutoff:String}"
+        params = {"cutoff": cutoff}
+        if agent_id:
+            query += " AND agent_id = {agent_id:String}"
+            params["agent_id"] = agent_id
+        if level:
+            query += " AND level = {level:String}"
+            params["level"] = level
+        query += " ORDER BY created_at DESC LIMIT {lim:UInt32}"
+        params["lim"] = limit
+        rows = _run_clickhouse(query, params=params, fetch=True) or []
     elif IS_POSTGRES:
         query = "SELECT * FROM events WHERE created_at >= $1"
         params = [cutoff]; idx = 2
@@ -925,7 +942,7 @@ def get_events(agent_id: str = None, level: str = None, last_hours: int = 24, li
 def get_event_counts(last_hours: int = 24) -> dict[str, int]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
-        rows = _run_clickhouse(f"SELECT level, count() as cnt FROM events WHERE created_at >= '{cutoff}' GROUP BY level", fetch=True) or []
+        rows = _run_clickhouse("SELECT level, count() as cnt FROM events WHERE created_at >= {cutoff:String} GROUP BY level", params={"cutoff": cutoff}, fetch=True) or []
     elif IS_POSTGRES:
         rows = db_execute("", "SELECT level, COUNT(*) as cnt FROM events WHERE created_at >= $1 GROUP BY level",
                          params_pg=[cutoff], fetch=True) or []
@@ -972,10 +989,14 @@ def insert_logs(agent_id: str, logs: list[dict]):
 def get_logs(agent_id: str = None, last_hours: int = 24, limit: int = 500) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
-        query = f"SELECT * FROM logs WHERE timestamp >= '{cutoff}'"
-        if agent_id: query += f" AND agent_id = '{agent_id}'"
-        query += f" ORDER BY timestamp DESC LIMIT {limit}"
-        return _run_clickhouse(query, fetch=True) or []
+        query = "SELECT * FROM logs WHERE timestamp >= {cutoff:String}"
+        params = {"cutoff": cutoff}
+        if agent_id:
+            query += " AND agent_id = {agent_id:String}"
+            params["agent_id"] = agent_id
+        query += " ORDER BY timestamp DESC LIMIT {lim:UInt32}"
+        params["lim"] = limit
+        return _run_clickhouse(query, params=params, fetch=True) or []
     elif IS_POSTGRES:
         query = "SELECT * FROM logs WHERE timestamp >= $1"; params = [cutoff]; idx = 2
         if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
@@ -1164,7 +1185,8 @@ def insert_audit_log(user_id: str = "system", username: str = "system", action: 
 def get_audit_logs(last_hours: int = 168, limit: int = 100) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
-        rows = _run_clickhouse(f"SELECT * FROM audit_logs WHERE timestamp >= '{cutoff}' ORDER BY timestamp DESC LIMIT {limit}", fetch=True) or []
+        rows = _run_clickhouse("SELECT * FROM audit_logs WHERE timestamp >= {cutoff:String} ORDER BY timestamp DESC LIMIT {lim:UInt32}",
+                               params={"cutoff": cutoff, "lim": limit}, fetch=True) or []
     elif IS_POSTGRES:
         rows = db_execute("", "SELECT * FROM audit_logs WHERE timestamp >= $1 ORDER BY timestamp DESC LIMIT $2",
                          params_pg=[cutoff, limit], fetch=True) or []
@@ -1253,7 +1275,7 @@ def save_process_snapshot(agent_id: str, processes: list[dict]):
     """Save latest process snapshot for an agent (replace old one)."""
     snapshot_val = json.dumps(processes)
     if IS_CLICKHOUSE:
-        _run_clickhouse(f"ALTER TABLE processes DELETE WHERE agent_id = '{agent_id}'")
+        _run_clickhouse("ALTER TABLE processes DELETE WHERE agent_id = {agent_id:String}", params={"agent_id": agent_id})
         _run_ch_insert('processes', ['id', 'agent_id', 'snapshot', 'timestamp'],
                        [[0, agent_id, snapshot_val, datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')]])
     elif IS_POSTGRES:
@@ -1267,7 +1289,8 @@ def save_process_snapshot(agent_id: str, processes: list[dict]):
 def get_process_snapshot(agent_id: str) -> list[dict]:
     """Get latest process snapshot for an agent."""
     if IS_CLICKHOUSE:
-        rows = _run_clickhouse(f"SELECT snapshot, timestamp FROM processes WHERE agent_id = '{agent_id}' ORDER BY timestamp DESC LIMIT 1", fetch=True) or []
+        rows = _run_clickhouse("SELECT snapshot, timestamp FROM processes WHERE agent_id = {agent_id:String} ORDER BY timestamp DESC LIMIT 1",
+                               params={"agent_id": agent_id}, fetch=True) or []
     elif IS_POSTGRES:
         rows = db_execute("", "SELECT snapshot, timestamp FROM processes WHERE agent_id = $1 ORDER BY timestamp DESC LIMIT 1",
                          params_pg=[agent_id], fetch=True) or []
@@ -1317,10 +1340,14 @@ def get_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100) -> 
     """Query traces."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
-        query = f"SELECT * FROM traces WHERE timestamp >= '{cutoff}'"
-        if agent_id: query += f" AND agent_id = '{agent_id}'"
-        query += f" ORDER BY timestamp DESC LIMIT {limit}"
-        rows = _run_clickhouse(query, fetch=True) or []
+        query = "SELECT * FROM traces WHERE timestamp >= {cutoff:String}"
+        params = {"cutoff": cutoff}
+        if agent_id:
+            query += " AND agent_id = {agent_id:String}"
+            params["agent_id"] = agent_id
+        query += " ORDER BY timestamp DESC LIMIT {lim:UInt32}"
+        params["lim"] = limit
+        rows = _run_clickhouse(query, params=params, fetch=True) or []
     elif IS_POSTGRES:
         if agent_id:
             rows = db_execute("", "SELECT * FROM traces WHERE agent_id = $1 AND timestamp >= $2 ORDER BY timestamp DESC LIMIT $3",
@@ -1344,16 +1371,16 @@ def get_trace_summary(last_hours: int = 1) -> dict:
     """Get aggregate trace statistics for the Application Monitoring dashboard."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
-        rows = _run_clickhouse(f"""
+        rows = _run_clickhouse("""
             SELECT service_name,
                    count() as req_count,
                    avg(duration_ms) as avg_latency,
                    max(duration_ms) as max_latency,
                    quantile(0.95)(duration_ms) as p95_latency,
                    countIf(status = 'error') as error_count
-            FROM traces WHERE timestamp >= '{cutoff}'
+            FROM traces WHERE timestamp >= {cutoff:String}
             GROUP BY service_name ORDER BY req_count DESC
-        """, fetch=True) or []
+        """, params={"cutoff": cutoff}, fetch=True) or []
     elif IS_POSTGRES:
         rows = db_execute("", """
             SELECT service_name,
@@ -1488,3 +1515,72 @@ def purge_all_data() -> dict:
             results[table] = f"error: {e}"
     return {"status": "ok", "tables": results}
 
+
+# ─── Service-level queries (v5.0.2) ───
+
+def get_services(last_hours: int = 24) -> list[dict]:
+    """Get distinct service names from traces."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
+    if IS_CLICKHOUSE:
+        rows = _run_clickhouse(
+            "SELECT service_name, count() as req_count, avg(duration_ms) as avg_latency, "
+            "countIf(status = 'error') as error_count, max(timestamp) as last_seen "
+            "FROM traces WHERE timestamp >= {cutoff:String} AND service_name != '' "
+            "GROUP BY service_name ORDER BY req_count DESC",
+            params={"cutoff": cutoff}, fetch=True
+        ) or []
+    elif IS_POSTGRES:
+        rows = db_execute("", """
+            SELECT service_name, COUNT(*) as req_count, AVG(duration_ms) as avg_latency,
+                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count, MAX(timestamp) as last_seen
+            FROM traces WHERE timestamp >= $1 AND service_name != ''
+            GROUP BY service_name ORDER BY req_count DESC
+        """, params_pg=[cutoff], fetch=True) or []
+    else:
+        rows = _run_sqlite("""
+            SELECT service_name, COUNT(*) as req_count, AVG(duration_ms) as avg_latency,
+                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count, MAX(timestamp) as last_seen
+            FROM traces WHERE timestamp >= ? AND service_name != ''
+            GROUP BY service_name ORDER BY req_count DESC
+        """, [cutoff], fetch=True) or []
+    return rows
+
+
+def get_traces_by_service(service_name: str, last_hours: int = 24, limit: int = 100) -> list[dict]:
+    """Get traces for a specific service."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
+    if IS_CLICKHOUSE:
+        rows = _run_clickhouse(
+            "SELECT * FROM traces WHERE service_name = {svc:String} AND timestamp >= {cutoff:String} "
+            "ORDER BY timestamp DESC LIMIT {lim:UInt32}",
+            params={"svc": service_name, "cutoff": cutoff, "lim": limit}, fetch=True
+        ) or []
+    elif IS_POSTGRES:
+        rows = db_execute("", "SELECT * FROM traces WHERE service_name = $1 AND timestamp >= $2 ORDER BY timestamp DESC LIMIT $3",
+                         params_pg=[service_name, cutoff, limit], fetch=True) or []
+    else:
+        rows = _run_sqlite("SELECT * FROM traces WHERE service_name = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+                          [service_name, cutoff, limit], fetch=True) or []
+    for r in rows:
+        r["attributes"] = _parse_json_field(r.get("attributes"))
+    return rows
+
+
+def get_metrics_by_service(service_name: str, last_hours: int = 24, limit: int = 500) -> list[dict]:
+    """Get metrics for a specific service (matched via labels containing service_name)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
+    if IS_CLICKHOUSE:
+        rows = _run_clickhouse(
+            "SELECT * FROM metrics WHERE labels LIKE {pattern:String} AND timestamp >= {cutoff:String} "
+            "ORDER BY timestamp DESC LIMIT {lim:UInt32}",
+            params={"pattern": f"%{service_name}%", "cutoff": cutoff, "lim": limit}, fetch=True
+        ) or []
+    elif IS_POSTGRES:
+        rows = db_execute("", "SELECT * FROM metrics WHERE labels LIKE $1 AND timestamp >= $2 ORDER BY timestamp DESC LIMIT $3",
+                         params_pg=[f"%{service_name}%", cutoff, limit], fetch=True) or []
+    else:
+        rows = _run_sqlite("SELECT * FROM metrics WHERE labels LIKE ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+                          [f"%{service_name}%", cutoff, limit], fetch=True) or []
+    for r in rows:
+        r["labels"] = _parse_json_field(r.get("labels"))
+    return rows

@@ -1,5 +1,5 @@
 """
-Insight OpenTelemetry Agent v6.0.0
+Insight Collector v5.0.2
 
 Receives OTLP data (traces + metrics + logs) via HTTP (protobuf or JSON)
 and forwards to Insight Core API.
@@ -45,8 +45,8 @@ except ImportError:
 
 CORE_API_URL = os.getenv("INSIGHT_CORE_URL", "http://localhost:8080")
 API_KEY = os.getenv("INSIGHT_API_KEY", "insight-secret-key")
-AGENT_ID = os.getenv("AGENT_ID", f"otel-agent-{socket.gethostname()}")
-AGENT_NAME = os.getenv("AGENT_NAME", f"OpenTelemetry Agent ({socket.gethostname()})")
+AGENT_ID = os.getenv("AGENT_ID", f"collector-{socket.gethostname()}")
+AGENT_NAME = os.getenv("AGENT_NAME", f"Insight Collector ({socket.gethostname()})")
 LISTEN_PORT = int(os.getenv("OTEL_PORT", "4318"))
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
@@ -59,7 +59,7 @@ logger = logging.getLogger("insight.otel-agent")
 
 # ─── FastAPI App ───
 
-app = FastAPI(title="Insight OTLP Receiver", version="6.0.0")
+app = FastAPI(title="Insight OTLP Collector", version="5.0.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Stats
@@ -374,7 +374,7 @@ def _heartbeat_loop():
             send_to_core("/api/v1/metrics", {
                 "agent_id": AGENT_ID,
                 "agent_name": AGENT_NAME,
-                "agent_type": "opentelemetry",
+                "agent_type": "collector",
                 "agent_category": "application",
                 "hostname": socket.gethostname(),
                 "metrics": [{
@@ -392,7 +392,7 @@ def _heartbeat_loop():
 
 @app.on_event("startup")
 async def startup():
-    logger.info(f"Insight OpenTelemetry Agent v6.0.0 starting...")
+    logger.info(f"Insight Collector v5.0.2 starting...")
     logger.info(f"   Agent ID: {AGENT_ID}")
     logger.info(f"   Core URL: {CORE_API_URL}")
     logger.info(f"   OTLP HTTP Port: {LISTEN_PORT}")

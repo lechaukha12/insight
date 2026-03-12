@@ -1,6 +1,7 @@
 """
-Insight Monitoring System - API Gateway v5.0.0
+Insight Monitoring System - API Gateway v5.0.2
 RBAC, Webhooks, WebSocket, Multi-cluster support.
+Security: API key auth, CORS restriction, rate limiting, request size limit.
 """
 
 import asyncio
@@ -34,6 +35,7 @@ from shared.database.db import (
     save_process_snapshot, get_process_snapshot,
     insert_traces, get_traces, get_trace_summary,
     get_storage_stats, apply_retention_policies, purge_all_data,
+    get_services, get_traces_by_service, get_metrics_by_service,
 )
 from api_gateway.auth import (
     hash_password, verify_password, create_token, verify_token,
@@ -65,25 +67,53 @@ ws_manager = ConnectionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Insight API Gateway v5.0.0 starting...")
+    logger.info("Insight API Gateway v5.0.2 starting...")
     init_db()
     ensure_default_admin()
     logger.info("Database and auth initialized")
     yield
     logger.info("Shutting down")
 
-app = FastAPI(title="Insight Monitoring System", version="5.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-API_KEY = os.getenv("INSIGHT_API_KEY", "insight-secret-key")
+app = FastAPI(title="Insight Monitoring System", version="5.0.2", lifespan=lifespan)
+
+# ─── CORS (restrict to specific origins) ───
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# ─── API Key validation for agent endpoints ───
+API_KEY = os.getenv("INSIGHT_API_KEY", "")
+if not API_KEY:
+    import secrets as _sec
+    API_KEY = _sec.token_urlsafe(32)
+    logger.warning(f"INSIGHT_API_KEY not set, generated random key: {API_KEY}")
+
+async def require_api_key(request: Request):
+    """Validate X-API-Key header for agent data endpoints."""
+    key = request.headers.get("X-API-Key", "")
+    if key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+# ─── Request size limit middleware (10MB) ───
+@app.middleware("http")
+async def limit_request_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > 10 * 1024 * 1024:
+        return JSONResponse(status_code=413, content={"detail": "Request body too large (max 10MB)"})
+    return await call_next(request)
+
+# ─── Login rate limiting (in-memory) ───
+_login_attempts: dict[str, list[float]] = {}
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_WINDOW_SECONDS = 60
 
 # ─── Health ───
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.0.0", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "version": "5.0.2", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/")
 async def root():
-    return {"name": "Insight Monitoring System", "version": "5.0.0"}
+    return {"app": "Insight Monitoring System", "version": "5.0.2"}
 
 # ════════════════════════════════════════════════
 # AUTH ROUTES
@@ -91,13 +121,22 @@ async def root():
 
 @app.post("/api/v1/auth/login")
 async def login(request: Request):
+    # Rate limit check
+    client_ip = request.client.host if request.client else "unknown"
+    now = datetime.now(timezone.utc).timestamp()
+    attempts = _login_attempts.get(client_ip, [])
+    attempts = [t for t in attempts if now - t < LOGIN_WINDOW_SECONDS]
+    if len(attempts) >= LOGIN_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
     body = await request.json()
     username, password = body.get("username", ""), body.get("password", "")
     if not username or not password:
         raise HTTPException(400, "Username and password required")
     user = get_user_by_username(username)
-    if not user or not verify_password(password, user["password_hash"]):
-        raise HTTPException(401, "Invalid credentials")
+    if not user or not verify_password(body.get("password", ""), user["password_hash"]):
+        _login_attempts.setdefault(client_ip, []).append(now)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    _login_attempts.pop(client_ip, None)  # Clear on success
     token = create_token(user["id"], user["username"], user.get("role", "viewer"))
     ip = request.client.host if request.client else ""
     insert_audit_log(user["id"], user["username"], "login", "auth", {"method": "password"}, ip)
@@ -175,7 +214,7 @@ async def create_new_cluster(request: Request, user: dict = Depends(require_role
 # AGENT ROUTES
 # ════════════════════════════════════════════════
 
-@app.post("/api/v1/agents/register")
+@app.post("/api/v1/agents/register", dependencies=[Depends(require_api_key)])
 async def register_new_agent(request: Request):
     body = await request.json()
     agent = register_agent(name=body.get("name","unnamed"), agent_type=body.get("agent_type","unknown"),
@@ -189,6 +228,10 @@ async def get_all_agents(cluster_id: str = Query(None), category: str = Query(No
     # Filter by category if specified
     if category and category != 'all':
         agents = [a for a in agents if a.get('agent_category') == category]
+    # Merge latest_metrics into each agent
+    metrics_map = get_latest_metrics_per_agent()
+    for a in agents:
+        a["latest_metrics"] = metrics_map.get(a["id"], [])
     return {"agents": agents, "total": len(agents)}
 
 @app.get("/api/v1/agents/{agent_id}")
@@ -197,7 +240,7 @@ async def get_agent_detail(agent_id: str):
     if not agent: raise HTTPException(404, "Agent not found")
     return agent
 
-@app.post("/api/v1/agents/{agent_id}/heartbeat")
+@app.post("/api/v1/agents/{agent_id}/heartbeat", dependencies=[Depends(require_api_key)])
 async def agent_heartbeat(agent_id: str):
     update_agent_heartbeat(agent_id)
     return {"status": "ok"}
@@ -206,7 +249,7 @@ async def agent_heartbeat(agent_id: str):
 # METRICS ROUTES
 # ════════════════════════════════════════════════
 
-@app.post("/api/v1/metrics")
+@app.post("/api/v1/metrics", dependencies=[Depends(require_api_key)])
 async def receive_metrics(request: Request):
     body = await request.json()
     agent_id = body.get("agent_id","")
@@ -244,7 +287,7 @@ async def chart_events(last_hours: int = Query(24)):
 # EVENTS ROUTES
 # ════════════════════════════════════════════════
 
-@app.post("/api/v1/events")
+@app.post("/api/v1/events", dependencies=[Depends(require_api_key)])
 async def receive_events(request: Request):
     body = await request.json()
     agent_id = body.get("agent_id","")
@@ -276,7 +319,7 @@ async def ack_event(event_id: str):
 # LOGS ROUTES
 # ════════════════════════════════════════════════
 
-@app.post("/api/v1/logs")
+@app.post("/api/v1/logs", dependencies=[Depends(require_api_key)])
 async def receive_logs(request: Request):
     body = await request.json()
     agent_id = body.get("agent_id","")
@@ -476,6 +519,17 @@ async def get_audit(last_hours: int = Query(168), limit: int = Query(100), user:
 
 @app.websocket("/ws/dashboard")
 async def websocket_dashboard(websocket: WebSocket):
+    # Max connections limit
+    if len(ws_manager.active_connections) >= 50:
+        await websocket.close(code=1013)
+        return
+    # Auth: require token in query param
+    token = websocket.query_params.get("token")
+    if token:
+        payload = verify_token(token)
+        if not payload:
+            await websocket.close(code=4001)
+            return
     await ws_manager.connect(websocket)
     try:
         while True:
@@ -538,7 +592,7 @@ async def check_metric_alerts(agent_id: str, metrics: list[dict]):
 
 # ─── Process Monitoring ───
 
-@app.post("/api/v1/processes", dependencies=[Depends(require_auth)])
+@app.post("/api/v1/processes", dependencies=[Depends(require_api_key)])
 async def receive_processes(request: Request):
     data = await request.json()
     agent_id = data.get("agent_id")
@@ -557,7 +611,7 @@ async def query_processes(agent_id: str = None):
 
 # ─── Traces ───
 
-@app.post("/api/v1/traces")
+@app.post("/api/v1/traces", dependencies=[Depends(require_api_key)])
 async def receive_traces(request: Request):
     data = await request.json()
     agent_id = data.get("agent_id")
@@ -576,6 +630,26 @@ async def query_traces(agent_id: str = None, last_hours: int = 24, limit: int = 
 async def trace_summary(last_hours: int = 1):
     """Aggregate trace stats for Application Monitoring dashboard."""
     return get_trace_summary(last_hours=last_hours)
+
+# ─── Services (v5.0.2) ───
+
+@app.get("/api/v1/services")
+async def list_services(last_hours: int = Query(24)):
+    """Get distinct OTel service names from traces."""
+    services = get_services(last_hours=last_hours)
+    return {"services": services, "total": len(services)}
+
+@app.get("/api/v1/services/{service_name}/traces")
+async def service_traces(service_name: str, last_hours: int = Query(24), limit: int = Query(100)):
+    """Get traces for a specific service."""
+    traces = get_traces_by_service(service_name, last_hours=last_hours, limit=limit)
+    return {"traces": traces, "total": len(traces), "service": service_name}
+
+@app.get("/api/v1/services/{service_name}/metrics")
+async def service_metrics(service_name: str, last_hours: int = Query(24), limit: int = Query(500)):
+    """Get metrics for a specific service."""
+    metrics = get_metrics_by_service(service_name, last_hours=last_hours, limit=limit)
+    return {"metrics": metrics, "total": len(metrics), "service": service_name}
 
 @app.get("/api/v1/storage/stats", dependencies=[Depends(require_auth)])
 async def storage_stats():

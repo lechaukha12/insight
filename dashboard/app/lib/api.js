@@ -196,3 +196,16 @@ export async function getTraceSummary(lastHours = 1) {
     return fetchAPI(`/api/v1/traces/summary?last_hours=${lastHours}`);
 }
 
+// ─── Services (v5.0.2) ───
+
+export async function getServices(lastHours = 24) {
+    return fetchAPI(`/api/v1/services?last_hours=${lastHours}`);
+}
+
+export async function getServiceTraces(serviceName, lastHours = 24, limit = 100) {
+    return fetchAPI(`/api/v1/services/${encodeURIComponent(serviceName)}/traces?last_hours=${lastHours}&limit=${limit}`);
+}
+
+export async function getServiceMetrics(serviceName, lastHours = 24) {
+    return fetchAPI(`/api/v1/services/${encodeURIComponent(serviceName)}/metrics?last_hours=${lastHours}`);
+}

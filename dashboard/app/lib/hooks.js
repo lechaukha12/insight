@@ -39,10 +39,18 @@ export function useData(fetchFn, deps = [], refreshInterval = null) {
  */
 export function timeAgo(dateStr) {
     if (!dateStr) return '';
-    const date = new Date(dateStr);
+    // Server returns UTC timestamps without 'Z' suffix — append it so browser parses as UTC
+    let str = String(dateStr).trim();
+    if (!str.endsWith('Z') && !str.includes('+') && !str.includes('T')) {
+        str = str.replace(' ', 'T') + 'Z';
+    } else if (str.includes('T') && !str.endsWith('Z') && !str.includes('+')) {
+        str = str + 'Z';
+    }
+    const date = new Date(str);
     const now = new Date();
     const seconds = Math.floor((now - date) / 1000);
 
+    if (seconds < 0) return 'just now';
     if (seconds < 60) return 'just now';
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;

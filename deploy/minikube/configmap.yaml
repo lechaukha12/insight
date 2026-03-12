@@ -7,7 +7,7 @@ data:
   # ─── API Gateway ───
   PORT: "8080"
   DATABASE_URL: "/data/insight.db"
-  INSIGHT_API_KEY: "insight-secret-key"
+  CORS_ORIGINS: "http://localhost:3000"
 
   # ─── K8s Agent ───
   AGENT_ID: "k8s-agent-cluster1"
@@ -30,3 +30,6 @@ stringData:
   # Replace with your actual values
   TELEGRAM_BOT_TOKEN: "your-bot-token-here"
   TELEGRAM_CHAT_ID: "your-chat-id-here"
+  INSIGHT_API_KEY: "insight-secret-key"
+  JWT_SECRET: "change-this-to-a-random-64-char-string"
+  ADMIN_PASSWORD: "insight2024"

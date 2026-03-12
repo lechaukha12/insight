@@ -66,14 +66,7 @@ export default function DashboardPage() {
   return (
     <>
       <div className="main-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <h2>Dashboard Overview</h2>
-          <span className={`ws-indicator ${isConnected ? 'connected' : 'disconnected'}`}>{isConnected ? 'Live' : 'Offline'}</span>
-        </div>
-        <div className="header-actions">
-          <ClusterSelector onClusterChange={handleClusterChange} />
-          <button className="btn btn-primary" onClick={handleSendReport} disabled={sending}>{sending ? 'Sending...' : 'Send Report'}</button>
-        </div>
+        <h2>Dashboard</h2>
       </div>
       <div className="main-body">
         {/* Stats */}
@@ -126,7 +119,7 @@ export default function DashboardPage() {
           <div style={{ marginBottom: 28 }}>
             <div className="card">
               <div className="card-header">
-                <div><div className="card-title">📊 Application Monitoring</div><div className="card-subtitle">OTLP trace data from instrumented services (last 1h)</div></div>
+                <div><div className="card-title">Application Monitoring</div><div className="card-subtitle">OTLP trace data from instrumented services (last 1h)</div></div>
                 <a href="/agents" className="btn btn-secondary btn-sm">View Agents</a>
               </div>
               {/* APM Stats */}
@@ -176,7 +169,7 @@ export default function DashboardPage() {
               {/* Service Map */}
               {traceSummary.services?.length > 1 && (
                 <div style={{ marginTop: 20, padding: 20, background: 'var(--bg-secondary, #faf7f2)', borderRadius: 12 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#666', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 16 }}>🗺️ Service Map</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#666', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 16 }}>Service Map</div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0, flexWrap: 'wrap', padding: '20px 0' }}>
                     {traceSummary.services.map((svc, idx) => (
                       <div key={svc.name} style={{ display: 'flex', alignItems: 'center' }}>
@@ -190,7 +183,7 @@ export default function DashboardPage() {
                           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>{svc.name}</div>
                           <div style={{ fontSize: 11, opacity: 0.9 }}>{svc.requests} req · {svc.avg_latency_ms?.toFixed(0)}ms avg</div>
                           <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>
-                            {svc.error_count > 0 ? `⚠ ${svc.error_count} errors` : '✓ healthy'}
+                            {svc.error_count > 0 ? `${svc.error_count} errors` : 'healthy'}
                           </div>
                         </div>
                         {/* Arrow between nodes */}

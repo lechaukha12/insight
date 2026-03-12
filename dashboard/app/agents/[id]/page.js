@@ -135,9 +135,9 @@ export default function AgentDetailPage() {
                         {/* OTel Application Metrics */}
                         {agent?.agent_type === 'opentelemetry' && (
                             <div style={{ marginTop: 20, borderTop: '1px solid var(--border-color, #e0d8cc)', paddingTop: 20 }}>
-                                <div className="card-header"><div><div className="card-title">📊 Application Metrics</div><div className="card-subtitle">OTel metrics from instrumented services ({otelMetrics.length} data points)</div></div></div>
+                                <div className="card-header"><div><div className="card-title">Application Metrics</div><div className="card-subtitle">OTel metrics from instrumented services ({otelMetrics.length} data points)</div></div></div>
                                 {otelMetrics.length === 0 ? (
-                                    <div className="empty-state"><div className="empty-state-icon">📈</div><div className="empty-state-text">No OTel metrics in the last hour. Metrics are collected automatically from instrumented services.</div></div>
+                                    <div className="empty-state"><div className="empty-state-icon">--</div><div className="empty-state-text">No OTel metrics in the last hour. Metrics are collected automatically from instrumented services.</div></div>
                                 ) : (
                                     <div>
                                         {/* Group metrics by category */}
@@ -160,7 +160,7 @@ export default function AgentDetailPage() {
                                             return Object.entries(groups).sort().map(([cat, metricsMap]) => (
                                                 <div key={cat} style={{ marginBottom: 16 }}>
                                                     <div style={{ fontSize: 13, fontWeight: 700, color: '#666', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8, paddingLeft: 8 }}>
-                                                        {cat === 'JVM' ? '☕' : cat === 'HTTP' ? '🌐' : cat === 'Process' ? '⚙️' : cat === 'System' ? '💻' : cat === 'Database' ? '🗄️' : '📊'} {cat} Metrics ({Object.keys(metricsMap).length})
+                                                        {cat} Metrics ({Object.keys(metricsMap).length})
                                                     </div>
                                                     <table className="data-table">
                                                         <thead><tr><th>Metric</th><th>Value</th><th>Unit</th><th>Service</th></tr></thead>

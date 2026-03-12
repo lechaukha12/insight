@@ -11,13 +11,15 @@ const navItems = [
     },
     {
         label: 'MONITORING', items: [
-            { name: 'Agents', href: '/agents' },
-            { name: 'Events & Alerts', href: '/events' },
-            { name: 'Error Logs', href: '/logs' },
+            { name: 'System', href: '/monitoring/system' },
+            { name: 'Application', href: '/monitoring/application' },
+            { name: 'Kubernetes', href: '/monitoring/kubernetes' },
         ]
     },
     {
-        label: 'RULES & ALERTS', items: [
+        label: 'ALERTS', items: [
+            { name: 'Events & Alerts', href: '/events' },
+            { name: 'Error Logs', href: '/logs' },
             { name: 'Notification Rules', href: '/rules' },
         ]
     },
@@ -57,7 +59,7 @@ export default function Sidebar() {
                     <div key={group.label} className="nav-section">
                         <div className="nav-section-label">{group.label}</div>
                         {group.items.map(item => (
-                            <a key={item.href} href={item.href} className={`nav-item ${pathname === item.href ? 'active' : ''}`}>{item.name}</a>
+                            <a key={item.href} href={item.href} className={`nav-item ${pathname === item.href || pathname?.startsWith(item.href + '/') ? 'active' : ''}`}>{item.name}</a>
                         ))}
                     </div>
                 ))}
@@ -73,8 +75,9 @@ export default function Sidebar() {
                         <button className="btn btn-sm btn-secondary" onClick={logout}>Logout</button>
                     </div>
                 )}
-                <div className="sidebar-version">v5.0.0</div>
+                <div className="sidebar-version">v5.0.2</div>
             </div>
         </aside>
     );
 }
+

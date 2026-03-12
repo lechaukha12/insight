@@ -87,6 +87,58 @@ def send_heartbeat():
     send_to_core(f"/api/v1/agents/{AGENT_ID}/heartbeat", {})
 
 
+# ─── Cluster Summary ───
+
+
+def collect_cluster_summary() -> list:
+    """Collect cluster-level summary metrics (node/namespace/pod/service/event counts)."""
+    metrics = []
+    labels = {"cluster": CLUSTER_NAME}
+    try:
+        nodes = v1.list_node()
+        metrics.append({"metric_name": "k8s_node_count", "metric_value": float(len(nodes.items)), "labels": labels})
+    except Exception as e:
+        logger.error(f"Failed to count nodes: {e}")
+        metrics.append({"metric_name": "k8s_node_count", "metric_value": 0.0, "labels": labels})
+
+    try:
+        namespaces = v1.list_namespace()
+        metrics.append({"metric_name": "k8s_namespace_count", "metric_value": float(len(namespaces.items)), "labels": labels})
+    except Exception as e:
+        logger.error(f"Failed to count namespaces: {e}")
+        metrics.append({"metric_name": "k8s_namespace_count", "metric_value": 0.0, "labels": labels})
+
+    try:
+        pods = v1.list_pod_for_all_namespaces()
+        metrics.append({"metric_name": "k8s_pod_count", "metric_value": float(len(pods.items)), "labels": labels})
+    except Exception as e:
+        logger.error(f"Failed to count pods: {e}")
+        metrics.append({"metric_name": "k8s_pod_count", "metric_value": 0.0, "labels": labels})
+
+    try:
+        services = v1.list_service_for_all_namespaces()
+        metrics.append({"metric_name": "k8s_service_count", "metric_value": float(len(services.items)), "labels": labels})
+    except Exception as e:
+        logger.error(f"Failed to count services: {e}")
+        metrics.append({"metric_name": "k8s_service_count", "metric_value": 0.0, "labels": labels})
+
+    try:
+        warnings = v1.list_event_for_all_namespaces(field_selector="type=Warning")
+        # Only count recent warnings (last 1h)
+        recent = 0
+        for ev in warnings.items:
+            if ev.last_timestamp:
+                event_time = ev.last_timestamp.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) - event_time <= timedelta(hours=1):
+                    recent += 1
+        metrics.append({"metric_name": "k8s_warning_event_count", "metric_value": float(recent), "labels": labels})
+    except Exception as e:
+        logger.error(f"Failed to count warning events: {e}")
+        metrics.append({"metric_name": "k8s_warning_event_count", "metric_value": 0.0, "labels": labels})
+
+    return metrics
+
+
 # ─── Node Monitoring ───
 
 
@@ -337,6 +389,9 @@ def run_scan():
     """Run a full scan and send results to core."""
     logger.info("Starting scan...")
     
+    # Collect cluster summary
+    cluster_summary = collect_cluster_summary()
+    
     # Collect node metrics
     node_metrics = collect_node_metrics()
     
@@ -346,7 +401,7 @@ def run_scan():
     # Collect K8s events
     k8s_events = collect_k8s_events()
 
-    all_metrics = node_metrics + pod_metrics
+    all_metrics = cluster_summary + node_metrics + pod_metrics
     # Filter: only send error events, skip warnings for real-time alerts
     error_events = [e for e in pod_events if e.get("level") in ("error", "critical")]
     all_events = error_events + [e for e in k8s_events if e.get("level") in ("error", "critical")]
@@ -357,7 +412,7 @@ def run_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
-            "agent_category": "system",
+            "agent_category": "kubernetes",
             "hostname": CLUSTER_NAME,
             "metrics": all_metrics,
         })
@@ -368,7 +423,7 @@ def run_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
-            "agent_category": "system",
+            "agent_category": "kubernetes",
             "hostname": CLUSTER_NAME,
             "events": all_events,
         })
@@ -379,7 +434,7 @@ def run_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
-            "agent_category": "system",
+            "agent_category": "kubernetes",
             "hostname": CLUSTER_NAME,
             "logs": pod_logs,
         })
@@ -392,14 +447,15 @@ def run_scan():
 
 def run_daily_scan():
     """Full comprehensive scan for daily report."""
-    logger.info("🔍 Running daily comprehensive scan...")
+    logger.info("Running daily comprehensive scan...")
     
     # This is the same as regular scan but includes ALL events (not just errors)
+    cluster_summary = collect_cluster_summary()
     node_metrics = collect_node_metrics()
     pod_metrics, pod_events, pod_logs = collect_pod_metrics()
     k8s_events = collect_k8s_events()
 
-    all_metrics = node_metrics + pod_metrics
+    all_metrics = cluster_summary + node_metrics + pod_metrics
     all_events = pod_events + k8s_events  # Include everything for daily report
 
     # Send all data
@@ -408,7 +464,7 @@ def run_daily_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
-            "agent_category": "system",
+            "agent_category": "kubernetes",
             "hostname": CLUSTER_NAME,
             "metrics": all_metrics,
         })
@@ -418,7 +474,7 @@ def run_daily_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
-            "agent_category": "system",
+            "agent_category": "kubernetes",
             "hostname": CLUSTER_NAME,
             "events": all_events,
         })
@@ -428,7 +484,7 @@ def run_daily_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
-            "agent_category": "system",
+            "agent_category": "kubernetes",
             "hostname": CLUSTER_NAME,
             "logs": pod_logs,
         })
@@ -439,7 +495,7 @@ def run_daily_scan():
         "channels": ["telegram"],
     })
 
-    logger.info("✅ Daily scan complete and report triggered")
+    logger.info("Daily scan complete and report triggered")
 
 
 def check_daily_schedule():
@@ -450,7 +506,7 @@ def check_daily_schedule():
 
 def main():
     """Main agent loop."""
-    logger.info(f"🚀 Insight K8s Agent starting...")
+    logger.info(f"Insight K8s Agent starting...")
     logger.info(f"   Agent ID: {AGENT_ID}")
     logger.info(f"   Cluster: {CLUSTER_NAME}")
     logger.info(f"   Core URL: {CORE_API_URL}")

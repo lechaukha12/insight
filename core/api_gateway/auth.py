@@ -4,6 +4,7 @@ JWT auth with RBAC (admin/operator/viewer).
 """
 
 import os
+import secrets
 import time
 from functools import wraps
 
@@ -11,12 +12,18 @@ import bcrypt
 import jwt
 from fastapi import HTTPException, Request
 
-JWT_SECRET = os.getenv("JWT_SECRET", "insight-jwt-secret-key-change-in-production")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    JWT_SECRET = secrets.token_hex(32)
+    print("[AUTH] WARNING: JWT_SECRET not set, using random secret (tokens won't persist across restarts)")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
 
 DEFAULT_ADMIN_USER = os.getenv("ADMIN_USERNAME", "admin")
-DEFAULT_ADMIN_PASS = os.getenv("ADMIN_PASSWORD", "insight2024")
+DEFAULT_ADMIN_PASS = os.getenv("ADMIN_PASSWORD")
+if not DEFAULT_ADMIN_PASS:
+    DEFAULT_ADMIN_PASS = secrets.token_urlsafe(16)
+    print(f"[AUTH] WARNING: ADMIN_PASSWORD not set, generated random password: {DEFAULT_ADMIN_PASS}")
 
 # Role hierarchy: admin > operator > viewer
 ROLE_PERMISSIONS = {

@@ -168,7 +168,7 @@ export default function SettingsPage() {
                         Webhooks
                     </button>
                     <button className={`btn ${tab === 'retention' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('retention')}>
-                        🗄️ Data Retention
+                        Data Retention
                     </button>
                 </div>
 
@@ -332,16 +332,16 @@ export default function SettingsPage() {
                         <div className="grid-2">
                             {/* Retention Policies */}
                             <div className="card">
-                                <div className="card-header"><div className="card-title">📋 Retention Policies</div></div>
+                                <div className="card-header"><div className="card-title">Retention Policies</div></div>
                                 <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '0 0 16px' }}>Set how long data is kept before automatic cleanup.</p>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                                     {[
-                                        { key: 'retention_traces_days', label: 'Traces', icon: '🔗', min: 1, max: 90 },
-                                        { key: 'retention_logs_days', label: 'Logs', icon: '📝', min: 1, max: 90 },
-                                        { key: 'retention_metrics_days', label: 'Metrics', icon: '📊', min: 1, max: 365 },
-                                        { key: 'retention_events_days', label: 'Events', icon: '⚡', min: 1, max: 90 },
-                                        { key: 'retention_processes_days', label: 'Processes', icon: '⚙️', min: 1, max: 30 },
-                                        { key: 'retention_audit_days', label: 'Audit Logs', icon: '🔍', min: 1, max: 365 },
+                                        { key: 'retention_traces_days', label: 'Traces', icon: '', min: 1, max: 90 },
+                                        { key: 'retention_logs_days', label: 'Logs', icon: '', min: 1, max: 90 },
+                                        { key: 'retention_metrics_days', label: 'Metrics', icon: '', min: 1, max: 365 },
+                                        { key: 'retention_events_days', label: 'Events', icon: '', min: 1, max: 90 },
+                                        { key: 'retention_processes_days', label: 'Processes', icon: '', min: 1, max: 30 },
+                                        { key: 'retention_audit_days', label: 'Audit Logs', icon: '', min: 1, max: 365 },
                                     ].map(item => (
                                         <div key={item.key} style={{
                                             display: 'flex', alignItems: 'center', gap: 12,
@@ -373,14 +373,14 @@ export default function SettingsPage() {
                                             setRetentionMsg({ type: 'error', text: 'Failed to apply: ' + err.message });
                                         } finally { setRetentionSaving(false); }
                                     }}>
-                                        {retentionSaving ? 'Applying...' : '💾 Save & Apply'}
+                                        {retentionSaving ? 'Applying...' : 'Save & Apply'}
                                     </button>
                                 </div>
                             </div>
 
                             {/* Storage Stats */}
                             <div className="card">
-                                <div className="card-header"><div className="card-title">💾 Storage Statistics</div></div>
+                                <div className="card-header"><div className="card-title">Storage Statistics</div></div>
                                 {storageStats?.engine === 'clickhouse' ? (
                                     storageStats.tables?.length > 0 ? (
                                         <div className="table-container">
@@ -408,7 +408,7 @@ export default function SettingsPage() {
                                     )
                                 ) : (
                                     <div style={{ padding: 16, background: 'var(--color-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-border)' }}>
-                                        <p style={{ fontWeight: 600, marginBottom: 8 }}>⚠️ ClickHouse not configured</p>
+                                        <p style={{ fontWeight: 600, marginBottom: 8 }}>ClickHouse not configured</p>
                                         <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
                                             Set <code>CLICKHOUSE_URL</code> env var on insight-api to enable storage statistics and retention management.
                                         </p>
@@ -416,7 +416,7 @@ export default function SettingsPage() {
                                 )}
                                 <button className="btn btn-secondary" style={{ marginTop: 12 }}
                                     onClick={() => getStorageStats().then(d => setStorageStats(d))}>
-                                    🔄 Refresh Stats
+                                    Refresh Stats
                                 </button>
                             </div>
                         </div>
@@ -425,7 +425,7 @@ export default function SettingsPage() {
                         {user?.role === 'admin' && (
                             <div className="card" style={{ marginTop: 20, border: '1px solid rgba(239,68,68,0.3)' }}>
                                 <div className="card-header">
-                                    <div className="card-title" style={{ color: 'var(--color-error)' }}>⚠️ Danger Zone</div>
+                                    <div className="card-title" style={{ color: 'var(--color-error)' }}>Danger Zone</div>
                                 </div>
                                 <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '0 0 12px' }}>
                                     Permanently delete all monitoring data (metrics, logs, traces, events). This action cannot be undone.
@@ -435,7 +435,7 @@ export default function SettingsPage() {
                                         background: 'rgba(239,68,68,0.1)', color: 'var(--color-error)',
                                         border: '1px solid rgba(239,68,68,0.3)', fontWeight: 600,
                                     }} onClick={() => setConfirmPurge(true)}>
-                                        🗑️ Purge All Data
+                                        Purge All Data
                                     </button>
                                 ) : (
                                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
