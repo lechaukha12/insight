@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { getAlertConfigs, createAlertConfig, deleteAlertConfig, getSettings, updateSettings, getStorageStats, applyRetention, purgeAllData } from '../lib/api';
+import { getAlertConfigs, createAlertConfig, deleteAlertConfig, getSettings, updateSettings, getStorageStats, applyRetention, purgeAllData, getAgentTokens, createAgentToken, revokeAgentToken } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 
 const API_BASE = '';
@@ -42,6 +42,14 @@ export default function SettingsPage() {
     const [retentionMsg, setRetentionMsg] = useState(null);
     const [confirmPurge, setConfirmPurge] = useState(false);
 
+    // Tokens state
+    const [tokens, setTokens] = useState([]);
+    const [tokensLoading, setTokensLoading] = useState(true);
+    const [showTokenForm, setShowTokenForm] = useState(false);
+    const [tokenForm, setTokenForm] = useState({ name: '', agent_type: 'any', cluster_id: 'default' });
+    const [newCreatedToken, setNewCreatedToken] = useState(null);
+    const [tokenCopied, setTokenCopied] = useState(false);
+
     const { user } = useAuth();
 
     const fetchData = useCallback(async () => {
@@ -59,7 +67,13 @@ export default function SettingsPage() {
         finally { setWebhookLoading(false); }
     }, []);
 
-    useEffect(() => { fetchData(); fetchWebhooks(); }, [fetchData, fetchWebhooks]);
+    useEffect(() => { fetchData(); fetchWebhooks(); fetchTokens(); }, [fetchData, fetchWebhooks]);
+
+    const fetchTokens = async () => {
+        try { const d = await getAgentTokens(); setTokens(d.tokens || []); }
+        catch (err) { console.error(err); }
+        finally { setTokensLoading(false); }
+    };
 
     // Fetch storage stats when retention tab is selected
     useEffect(() => {
@@ -164,6 +178,9 @@ export default function SettingsPage() {
                     <button className={`btn ${tab === 'general' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('general')}>
                         General
                     </button>
+                    <button className={`btn ${tab === 'tokens' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('tokens')}>
+                        Agent Tokens
+                    </button>
                     <button className={`btn ${tab === 'webhooks' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('webhooks')}>
                         Webhooks
                     </button>
@@ -257,7 +274,117 @@ export default function SettingsPage() {
                     </>
                 )}
 
-                {/* ─── Webhooks Tab ─── */}
+                {/* --- Agent Tokens Tab --- */}
+                {tab === 'tokens' && (
+                    <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                            <div>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-secondary)' }}>Manage tokens used by agents to authenticate with Insight Core.</div>
+                            </div>
+                            <button className="btn btn-primary" onClick={() => { setShowTokenForm(!showTokenForm); setNewCreatedToken(null); }}>
+                                {showTokenForm ? 'Cancel' : '+ Create Token'}
+                            </button>
+                        </div>
+
+                        {/* New token just created */}
+                        {newCreatedToken && (
+                            <div className="card" style={{ marginBottom: 20, border: '2px solid var(--color-success)' }}>
+                                <div className="card-header">
+                                    <div className="card-title" style={{ color: 'var(--color-success)' }}>Token Created</div>
+                                </div>
+                                <div style={{ padding: '0 16px 16px' }}>
+                                    <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>Copy this token now. It will not be shown again.</p>
+                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                        <code style={{
+                                            flex: 1, padding: '10px 14px', background: '#1e293b', color: '#e2e8f0',
+                                            borderRadius: 'var(--radius-sm)', fontSize: 13, wordBreak: 'break-all', fontFamily: 'monospace',
+                                        }}>{newCreatedToken}</code>
+                                        <button className="btn btn-sm btn-primary" onClick={() => {
+                                            navigator.clipboard.writeText(newCreatedToken);
+                                            setTokenCopied(true); setTimeout(() => setTokenCopied(false), 2000);
+                                        }}>{tokenCopied ? 'Copied!' : 'Copy'}</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Create form */}
+                        {showTokenForm && !newCreatedToken && (
+                            <div className="card" style={{ marginBottom: 20 }}>
+                                <div className="card-header"><div className="card-title">Create Agent Token</div></div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, padding: '0 16px 16px' }}>
+                                    <div className="form-group">
+                                        <label className="form-label">Token Name</label>
+                                        <input className="form-input" placeholder="e.g. Production Servers"
+                                            value={tokenForm.name} onChange={e => setTokenForm({ ...tokenForm, name: e.target.value })} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">Agent Type</label>
+                                        <select className="form-input" value={tokenForm.agent_type}
+                                            onChange={e => setTokenForm({ ...tokenForm, agent_type: e.target.value })}>
+                                            <option value="any">Any Type</option>
+                                            <option value="system">System Only</option>
+                                            <option value="kubernetes">Kubernetes Only</option>
+                                            <option value="application">Application Only</option>
+                                        </select>
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">Cluster</label>
+                                        <input className="form-input" value={tokenForm.cluster_id}
+                                            onChange={e => setTokenForm({ ...tokenForm, cluster_id: e.target.value })} />
+                                    </div>
+                                </div>
+                                <div style={{ padding: '0 16px 16px' }}>
+                                    <button className="btn btn-primary" disabled={!tokenForm.name} onClick={async () => {
+                                        try {
+                                            const result = await createAgentToken(tokenForm);
+                                            setNewCreatedToken(result.token?.token || '');
+                                            setTokenForm({ name: '', agent_type: 'any', cluster_id: 'default' });
+                                            fetchTokens();
+                                        } catch (err) { alert('Failed: ' + err.message); }
+                                    }}>Generate Token</button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Token List */}
+                        {tokensLoading ? <div className="loading-overlay"><div className="loading-spinner" /></div> : tokens.length === 0 ? (
+                            <div className="card"><div className="empty-state"><div className="empty-state-icon">TK</div><div className="empty-state-text">No agent tokens</div><div className="empty-state-hint">Create a token to allow agents to authenticate with Insight Core</div></div></div>
+                        ) : (
+                            <div className="card">
+                                <div className="table-container">
+                                    <table className="data-table">
+                                        <thead><tr>
+                                            <th>NAME</th><th>TOKEN</th><th>TYPE</th><th>CLUSTER</th><th>AGENTS</th><th>LAST USED</th><th>STATUS</th><th>ACTIONS</th>
+                                        </tr></thead>
+                                        <tbody>{tokens.map(t => (
+                                            <tr key={t.id}>
+                                                <td style={{ fontWeight: 600 }}>{t.name}</td>
+                                                <td><code style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t.token_preview}</code></td>
+                                                <td><span className="badge info">{t.agent_type}</span></td>
+                                                <td>{t.cluster_id}</td>
+                                                <td style={{ fontWeight: 600 }}>{t.agent_count || 0}</td>
+                                                <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t.last_used || 'Never'}</td>
+                                                <td><span className={`badge ${t.is_active ? 'active' : 'error'}`}><span className="badge-dot" />{t.is_active ? 'Active' : 'Revoked'}</span></td>
+                                                <td>
+                                                    {t.is_active ? (
+                                                        <button className="btn btn-sm btn-secondary" style={{ color: 'var(--color-error)' }}
+                                                            onClick={async () => {
+                                                                if (!confirm(`Revoke token "${t.name}"? Agents using this token will be disconnected.`)) return;
+                                                                await revokeAgentToken(t.id); fetchTokens();
+                                                            }}>Revoke</button>
+                                                    ) : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Revoked</span>}
+                                                </td>
+                                            </tr>
+                                        ))}</tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                    </>
+                )}
+
+                {/* --- Webhooks Tab --- */}
                 {tab === 'webhooks' && (
                     <>
                         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>

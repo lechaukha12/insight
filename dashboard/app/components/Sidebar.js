@@ -14,6 +14,7 @@ const navItems = [
             { name: 'System', href: '/monitoring/system' },
             { name: 'Application', href: '/monitoring/application' },
             { name: 'Kubernetes', href: '/monitoring/kubernetes' },
+            { name: '+ Install Agent', href: '/agents/install' },
         ]
     },
     {
@@ -75,7 +76,7 @@ export default function Sidebar() {
                         <button className="btn btn-sm btn-secondary" onClick={logout}>Logout</button>
                     </div>
                 )}
-                <div className="sidebar-version">v5.0.2</div>
+                <div className="sidebar-version">v5.0.3</div>
             </div>
         </aside>
     );

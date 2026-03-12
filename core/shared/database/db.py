@@ -39,6 +39,19 @@ CREATE TABLE IF NOT EXISTS clusters (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS agent_tokens (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    agent_type TEXT DEFAULT 'any',
+    cluster_id TEXT DEFAULT 'default',
+    created_by TEXT DEFAULT '',
+    last_used TIMESTAMPTZ,
+    agent_count INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -48,6 +61,10 @@ CREATE TABLE IF NOT EXISTS agents (
     cluster_id TEXT DEFAULT 'default',
     status TEXT DEFAULT 'active',
     labels JSONB DEFAULT '{}',
+    token_id TEXT DEFAULT '',
+    agent_version TEXT DEFAULT '',
+    os_info TEXT DEFAULT '',
+    ip_address TEXT DEFAULT '',
     last_heartbeat TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -198,6 +215,19 @@ CREATE TABLE IF NOT EXISTS clusters (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS agent_tokens (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    agent_type TEXT DEFAULT 'any',
+    cluster_id TEXT DEFAULT 'default',
+    created_by TEXT DEFAULT '',
+    last_used TEXT,
+    agent_count INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -207,6 +237,10 @@ CREATE TABLE IF NOT EXISTS agents (
     cluster_id TEXT DEFAULT 'default',
     status TEXT DEFAULT 'active',
     labels TEXT DEFAULT '{}',
+    token_id TEXT DEFAULT '',
+    agent_version TEXT DEFAULT '',
+    os_info TEXT DEFAULT '',
+    ip_address TEXT DEFAULT '',
     last_heartbeat TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
@@ -714,6 +748,151 @@ def update_agent_status(agent_id: str, status: str):
         _run_pg("UPDATE agents SET status = $1 WHERE id = $2", [status, agent_id])
     else:
         _run_sqlite("UPDATE agents SET status = ? WHERE id = ?", [status, agent_id])
+
+
+# ─── Agent Tokens CRUD ───
+
+
+def create_agent_token(name: str, agent_type: str = "any", cluster_id: str = "default", created_by: str = "") -> dict:
+    """Create a new agent token."""
+    import secrets as _sec
+    token_id = str(uuid.uuid4())
+    token_value = f"ist_{_sec.token_urlsafe(32)}"  # ist_ prefix = insight token
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    if IS_POSTGRES:
+        _run_pg(
+            "INSERT INTO agent_tokens (id, name, token, agent_type, cluster_id, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            [token_id, name, token_value, agent_type, cluster_id, created_by, now]
+        )
+    else:
+        _run_sqlite(
+            "INSERT INTO agent_tokens (id, name, token, agent_type, cluster_id, created_by, created_at) VALUES (?,?,?,?,?,?,?)",
+            [token_id, name, token_value, agent_type, cluster_id, created_by, now]
+        )
+    return {"id": token_id, "name": name, "token": token_value, "agent_type": agent_type,
+            "cluster_id": cluster_id, "created_by": created_by, "is_active": 1, "agent_count": 0, "created_at": now}
+
+
+def list_agent_tokens() -> list[dict]:
+    """List all agent tokens."""
+    if IS_POSTGRES:
+        rows = db_execute("", "SELECT * FROM agent_tokens ORDER BY created_at DESC", fetch=True) or []
+    else:
+        rows = _run_sqlite("SELECT * FROM agent_tokens ORDER BY created_at DESC", fetch=True) or []
+    # count agents per token
+    for r in rows:
+        tid = r["id"]
+        if IS_POSTGRES:
+            cnt = db_execute("", "SELECT COUNT(*) as cnt FROM agents WHERE token_id = $1", params_pg=[tid], fetch=True)
+        else:
+            cnt = _run_sqlite("SELECT COUNT(*) as cnt FROM agents WHERE token_id = ?", [tid], fetch=True)
+        r["agent_count"] = cnt[0]["cnt"] if cnt else 0
+    return rows
+
+
+def verify_agent_token(token: str) -> dict | None:
+    """Verify an agent token. Returns token record or None."""
+    if IS_POSTGRES:
+        rows = db_execute("", "SELECT * FROM agent_tokens WHERE token = $1 AND is_active = 1", params_pg=[token], fetch=True)
+    else:
+        rows = _run_sqlite("SELECT * FROM agent_tokens WHERE token = ? AND is_active = 1", [token], fetch=True)
+    if not rows:
+        return None
+    # Update last_used
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    if IS_POSTGRES:
+        _run_pg("UPDATE agent_tokens SET last_used = $1 WHERE id = $2", [now, rows[0]["id"]])
+    else:
+        _run_sqlite("UPDATE agent_tokens SET last_used = ? WHERE id = ?", [now, rows[0]["id"]])
+    return rows[0]
+
+
+def revoke_agent_token(token_id: str) -> bool:
+    """Revoke (deactivate) an agent token."""
+    if IS_POSTGRES:
+        _run_pg("UPDATE agent_tokens SET is_active = 0 WHERE id = $1", [token_id])
+    else:
+        _run_sqlite("UPDATE agent_tokens SET is_active = 0 WHERE id = ?", [token_id])
+    return True
+
+
+def get_agents_by_token(token_id: str) -> list[dict]:
+    """Get all agents linked to a token."""
+    if IS_POSTGRES:
+        rows = db_execute("", "SELECT * FROM agents WHERE token_id = $1 ORDER BY created_at DESC", params_pg=[token_id], fetch=True) or []
+    else:
+        rows = _run_sqlite("SELECT * FROM agents WHERE token_id = ? ORDER BY created_at DESC", [token_id], fetch=True) or []
+    for r in rows:
+        r["labels"] = _parse_json_field(r.get("labels"))
+    return rows
+
+
+def connect_agent(token_record: dict, agent_data: dict) -> dict:
+    """Auto-register or update an agent using a validated token.
+    Called after token is verified. Creates new agent or updates existing one.
+    """
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    agent_id = agent_data.get("agent_id") or str(uuid.uuid4())
+    name = agent_data.get("name", agent_data.get("hostname", "unnamed"))
+    agent_type = agent_data.get("agent_type", token_record.get("agent_type", "system"))
+    if agent_type == "any":
+        agent_type = agent_data.get("agent_type", "system")
+    category = _resolve_category(agent_type, agent_data.get("agent_category"))
+    hostname = agent_data.get("hostname", "")
+    cluster_id = agent_data.get("cluster_id", token_record.get("cluster_id", "default"))
+    labels_val = json.dumps(agent_data.get("labels", {}))
+    version = agent_data.get("version", "")
+    os_info = agent_data.get("os_info", "")
+    ip_address = agent_data.get("ip_address", "")
+    token_id = token_record["id"]
+
+    if IS_POSTGRES:
+        _run_pg(
+            """INSERT INTO agents (id, name, agent_type, agent_category, hostname, cluster_id, status, labels,
+                   token_id, agent_version, os_info, ip_address, last_heartbeat, created_at)
+               VALUES ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$10,$11,$12,$12)
+               ON CONFLICT (id) DO UPDATE SET name=$2, agent_category=$4, hostname=$5, status='active',
+                   labels=$7, token_id=$8, agent_version=$9, os_info=$10, ip_address=$11, last_heartbeat=$12""",
+            [agent_id, name, agent_type, category, hostname, cluster_id, labels_val,
+             token_id, version, os_info, ip_address, now]
+        )
+    else:
+        _run_sqlite(
+            """INSERT OR REPLACE INTO agents (id, name, agent_type, agent_category, hostname, cluster_id, status, labels,
+                   token_id, agent_version, os_info, ip_address, last_heartbeat, created_at)
+               VALUES (?,?,?,?,?,?,'active',?,?,?,?,?,?,?)""",
+            [agent_id, name, agent_type, category, hostname, cluster_id, labels_val,
+             token_id, version, os_info, ip_address, now, now]
+        )
+
+    return {"id": agent_id, "name": name, "agent_type": agent_type, "agent_category": category,
+            "status": "active", "token_id": token_id, "agent_version": version}
+
+
+def migrate_agent_tokens_table():
+    """Migration: add agent_tokens table and new columns to agents if missing."""
+    if IS_POSTGRES:
+        _run_pg("""CREATE TABLE IF NOT EXISTS agent_tokens (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
+            agent_type TEXT DEFAULT 'any', cluster_id TEXT DEFAULT 'default',
+            created_by TEXT DEFAULT '', last_used TIMESTAMPTZ, agent_count INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1, created_at TIMESTAMPTZ DEFAULT NOW())""")
+        for col, default in [("token_id", "''"), ("agent_version", "''"), ("os_info", "''"), ("ip_address", "''")]:
+            try:
+                _run_pg(f"ALTER TABLE agents ADD COLUMN {col} TEXT DEFAULT {default}")
+            except Exception:
+                pass
+    else:
+        _run_sqlite("""CREATE TABLE IF NOT EXISTS agent_tokens (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
+            agent_type TEXT DEFAULT 'any', cluster_id TEXT DEFAULT 'default',
+            created_by TEXT DEFAULT '', last_used TEXT, agent_count INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))""")
+        for col in ["token_id", "agent_version", "os_info", "ip_address"]:
+            try:
+                _run_sqlite(f"ALTER TABLE agents ADD COLUMN {col} TEXT DEFAULT ''")
+            except Exception:
+                pass
 
 
 # ─── Metrics CRUD ───

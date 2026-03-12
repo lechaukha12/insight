@@ -209,3 +209,21 @@ export async function getServiceTraces(serviceName, lastHours = 24, limit = 100)
 export async function getServiceMetrics(serviceName, lastHours = 24) {
     return fetchAPI(`/api/v1/services/${encodeURIComponent(serviceName)}/metrics?last_hours=${lastHours}`);
 }
+
+// --- Agent Tokens (v5.0.3) ---
+
+export async function createAgentToken(data) {
+    return fetchAPI('/api/v1/agent-tokens', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function getAgentTokens() {
+    return fetchAPI('/api/v1/agent-tokens');
+}
+
+export async function revokeAgentToken(tokenId) {
+    return fetchAPI(`/api/v1/agent-tokens/${tokenId}`, { method: 'DELETE' });
+}
+
+export async function getTokenAgents(tokenId) {
+    return fetchAPI(`/api/v1/agent-tokens/${tokenId}/agents`);
+}

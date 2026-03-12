@@ -36,6 +36,8 @@ from shared.database.db import (
     insert_traces, get_traces, get_trace_summary,
     get_storage_stats, apply_retention_policies, purge_all_data,
     get_services, get_traces_by_service, get_metrics_by_service,
+    create_agent_token, list_agent_tokens, verify_agent_token, revoke_agent_token,
+    get_agents_by_token, connect_agent, migrate_agent_tokens_table,
 )
 from api_gateway.auth import (
     hash_password, verify_password, create_token, verify_token,
@@ -67,8 +69,9 @@ ws_manager = ConnectionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Insight API Gateway v5.0.2 starting...")
+    logger.info("Insight API Gateway v5.0.3 starting...")
     init_db()
+    migrate_agent_tokens_table()
     ensure_default_admin()
     logger.info("Database and auth initialized")
     yield
@@ -80,18 +83,32 @@ app = FastAPI(title="Insight Monitoring System", version="5.0.2", lifespan=lifes
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# ─── API Key validation for agent endpoints ───
+# --- API Key / Agent Token validation for agent endpoints ---
 API_KEY = os.getenv("INSIGHT_API_KEY", "")
 if not API_KEY:
     import secrets as _sec
     API_KEY = _sec.token_urlsafe(32)
     logger.warning(f"INSIGHT_API_KEY not set, generated random key: {API_KEY}")
 
-async def require_api_key(request: Request):
-    """Validate X-API-Key header for agent data endpoints."""
+async def require_agent_token(request: Request):
+    """Validate agent auth: supports X-Agent-Token (new) or X-API-Key (legacy)."""
+    # Try new token-based auth first
+    agent_token = request.headers.get("X-Agent-Token", "")
+    if agent_token:
+        token_record = verify_agent_token(agent_token)
+        if not token_record:
+            raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
+        request.state.token_record = token_record
+        return
+    # Fallback to legacy API key
     key = request.headers.get("X-API-Key", "")
-    if key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    if key == API_KEY:
+        request.state.token_record = None
+        return
+    raise HTTPException(status_code=401, detail="Invalid or missing agent token/API key")
+
+# Keep backward compat alias
+require_api_key = require_agent_token
 
 # ─── Request size limit middleware (10MB) ───
 @app.middleware("http")
@@ -214,13 +231,42 @@ async def create_new_cluster(request: Request, user: dict = Depends(require_role
 # AGENT ROUTES
 # ════════════════════════════════════════════════
 
-@app.post("/api/v1/agents/register", dependencies=[Depends(require_api_key)])
+@app.post("/api/v1/agents/register", dependencies=[Depends(require_agent_token)])
 async def register_new_agent(request: Request):
     body = await request.json()
     agent = register_agent(name=body.get("name","unnamed"), agent_type=body.get("agent_type","unknown"),
                            hostname=body.get("hostname",""), labels=body.get("labels",{}),
                            cluster_id=body.get("cluster_id","default"), agent_category=body.get("agent_category"))
     return {"status": "registered", "agent": agent}
+
+@app.post("/api/v1/agents/connect")
+async def agent_connect(request: Request):
+    """Token-based agent auto-registration. Agent sends token + metadata, gets back agent_id."""
+    # Validate token
+    agent_token = request.headers.get("X-Agent-Token", "")
+    if not agent_token:
+        raise HTTPException(status_code=401, detail="X-Agent-Token header required")
+    token_record = verify_agent_token(agent_token)
+    if not token_record:
+        raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
+    # Check type restriction
+    body = await request.json()
+    requested_type = body.get("agent_type", "system")
+    if token_record.get("agent_type") not in ("any", requested_type):
+        raise HTTPException(status_code=403, detail=f"Token restricted to type '{token_record['agent_type']}', got '{requested_type}'")
+    # Get client IP
+    client_ip = request.client.host if request.client else ""
+    body["ip_address"] = client_ip
+    # Connect agent
+    result = connect_agent(token_record, body)
+    from datetime import datetime, timezone
+    return {
+        "status": "connected",
+        "agent_id": result["id"],
+        "agent_name": result["name"],
+        "agent_category": result["agent_category"],
+        "server_time": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    }
 
 @app.get("/api/v1/agents")
 async def get_all_agents(cluster_id: str = Query(None), category: str = Query(None)):
@@ -240,10 +286,50 @@ async def get_agent_detail(agent_id: str):
     if not agent: raise HTTPException(404, "Agent not found")
     return agent
 
-@app.post("/api/v1/agents/{agent_id}/heartbeat", dependencies=[Depends(require_api_key)])
+@app.post("/api/v1/agents/{agent_id}/heartbeat", dependencies=[Depends(require_agent_token)])
 async def agent_heartbeat(agent_id: str):
     update_agent_heartbeat(agent_id)
     return {"status": "ok"}
+
+# ════════════════════════════════════════════════
+# AGENT TOKEN MANAGEMENT
+# ════════════════════════════════════════════════
+
+@app.post("/api/v1/agent-tokens")
+async def create_token_endpoint(request: Request, user: dict = Depends(require_role(["admin"]))):
+    body = await request.json()
+    name = body.get("name", "")
+    if not name:
+        raise HTTPException(400, "Token name is required")
+    token = create_agent_token(
+        name=name,
+        agent_type=body.get("agent_type", "any"),
+        cluster_id=body.get("cluster_id", "default"),
+        created_by=user.get("username", ""),
+    )
+    insert_audit_log(user["id"], user["username"], "create_agent_token", f"token:{token['id']}", {"name": name})
+    return {"status": "created", "token": token}
+
+@app.get("/api/v1/agent-tokens")
+async def list_tokens_endpoint(user: dict = Depends(require_role(["admin"]))):
+    tokens = list_agent_tokens()
+    # Mask token values for security (show only first 8 chars)
+    for t in tokens:
+        if t.get("token"):
+            t["token_preview"] = t["token"][:12] + "..."
+            del t["token"]  # Don't expose full token in list
+    return {"tokens": tokens, "total": len(tokens)}
+
+@app.delete("/api/v1/agent-tokens/{token_id}")
+async def revoke_token_endpoint(token_id: str, user: dict = Depends(require_role(["admin"]))):
+    revoke_agent_token(token_id)
+    insert_audit_log(user["id"], user["username"], "revoke_agent_token", f"token:{token_id}", {})
+    return {"status": "revoked"}
+
+@app.get("/api/v1/agent-tokens/{token_id}/agents")
+async def get_token_agents(token_id: str, user: dict = Depends(require_role(["admin"]))):
+    agents = get_agents_by_token(token_id)
+    return {"agents": agents, "total": len(agents)}
 
 # ════════════════════════════════════════════════
 # METRICS ROUTES
