@@ -104,7 +104,7 @@ export default function DashboardPage() {
         {/* Charts */}
         <div className="grid-2" style={{ marginBottom: 28 }}>
           <div className={`card ${wsFlash === 'metrics' ? 'ws-flash' : ''}`}>
-            <div className="card-header"><div><div className="card-title">System Metrics</div><div className="card-subtitle">CPU / Memory / Disk usage</div></div></div>
+            <div className="card-header"><div><div className="card-title">System Metrics</div><div className="card-subtitle">Auto-detected from active agents</div></div></div>
             <MetricsLineChart lastHours={6} height={280} />
           </div>
           <div className={`card ${wsFlash === 'events' ? 'ws-flash' : ''}`}>

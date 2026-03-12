@@ -26,17 +26,33 @@ const chartTooltipStyle = {
     color: '#1a1a1a',
 };
 
-// ─── Metrics Line Chart ───
+// ─── Metrics Line Chart (auto-detects system vs K8s metrics) ───
 export function MetricsLineChart({ agentId = null, lastHours = 6, height = 280 }) {
     const [data, setData] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [chartMode, setChartMode] = useState('system'); // 'system' or 'k8s'
 
     const fetchData = useCallback(async () => {
         try {
-            const params = { last_hours: lastHours, metric_names: 'cpu_percent,memory_percent,disk_percent' };
-            if (agentId) params.agent_id = agentId;
-            const result = await getChartMetrics(params);
-            setData(result?.timeseries || []);
+            // Try system metrics first
+            const sysParams = { last_hours: lastHours, metric_names: 'cpu_percent,memory_percent,disk_percent' };
+            if (agentId) sysParams.agent_id = agentId;
+            const sysResult = await getChartMetrics(sysParams);
+            if (sysResult?.timeseries?.length > 0) {
+                setData(sysResult.timeseries);
+                setChartMode('system');
+                return;
+            }
+            // Fallback: K8s pod metrics
+            const k8sParams = { last_hours: lastHours, metric_names: 'pods_running,pods_total,pods_pending,pods_failed' };
+            if (agentId) k8sParams.agent_id = agentId;
+            const k8sResult = await getChartMetrics(k8sParams);
+            if (k8sResult?.timeseries?.length > 0) {
+                setData(k8sResult.timeseries);
+                setChartMode('k8s');
+                return;
+            }
+            setData([]);
         } catch (err) {
             console.error('Chart data error:', err);
         } finally {
@@ -67,6 +83,34 @@ export function MetricsLineChart({ agentId = null, lastHours = 6, height = 280 }
         const parts = t.split('T');
         return parts.length > 1 ? parts[1] : t.slice(11);
     };
+
+    if (chartMode === 'k8s') {
+        return (
+            <ResponsiveContainer width="100%" height={height}>
+                <AreaChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                    <defs>
+                        <linearGradient id="gradPodRun" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#15803d" stopOpacity={0.2} />
+                            <stop offset="95%" stopColor="#15803d" stopOpacity={0} />
+                        </linearGradient>
+                        <linearGradient id="gradPodTotal" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#0165a7" stopOpacity={0.15} />
+                            <stop offset="95%" stopColor="#0165a7" stopOpacity={0} />
+                        </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(201,177,0,0.15)" />
+                    <XAxis dataKey="time" tickFormatter={formatTime} tick={{ fontSize: 11, fill: '#7a7050' }} />
+                    <YAxis tick={{ fontSize: 11, fill: '#7a7050' }} allowDecimals={false} />
+                    <Tooltip contentStyle={chartTooltipStyle} labelFormatter={formatTime} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Area type="monotone" dataKey="pods_total" name="Total Pods" stroke="#0165a7" fill="url(#gradPodTotal)" strokeWidth={2} dot={false} />
+                    <Area type="monotone" dataKey="pods_running" name="Running" stroke="#15803d" fill="url(#gradPodRun)" strokeWidth={2} dot={false} />
+                    <Area type="monotone" dataKey="pods_pending" name="Pending" stroke="#f59e0b" fill="none" strokeWidth={2} strokeDasharray="5 5" dot={false} />
+                    <Area type="monotone" dataKey="pods_failed" name="Failed" stroke="#dc2626" fill="none" strokeWidth={2} strokeDasharray="3 3" dot={false} />
+                </AreaChart>
+            </ResponsiveContainer>
+        );
+    }
 
     return (
         <ResponsiveContainer width="100%" height={height}>
