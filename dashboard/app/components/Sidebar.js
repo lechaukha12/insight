@@ -19,18 +19,12 @@ const navItems = [
     {
         label: 'RULES & ALERTS', items: [
             { name: 'Notification Rules', href: '/rules' },
-            { name: 'Webhooks', href: '/webhooks' },
         ]
     },
     {
         label: 'ACTIONS', items: [
             { name: 'Reports', href: '/reports' },
             { name: 'Settings', href: '/settings' },
-        ]
-    },
-    {
-        label: 'SYSTEM', items: [
-            { name: 'Audit Log', href: '/audit' },
         ]
     },
 ];
