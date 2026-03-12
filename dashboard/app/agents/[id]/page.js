@@ -100,10 +100,10 @@ export default function AgentDetailPage() {
             <div className="main-body">
                 {/* Agent Info */}
                 <div className="stats-grid" style={{ marginBottom: 24 }}>
-                    <div className="stat-card"><div className="stat-icon agents">ID</div><div className="stat-info"><div className="stat-label">Agent ID</div><div style={{ fontSize: 13, wordBreak: 'break-all' }}>{agent.id}</div></div></div>
-                    <div className="stat-card"><div className="stat-icon active">T</div><div className="stat-info"><div className="stat-value">{agent.agent_type}</div><div className="stat-label">Type</div></div></div>
-                    <div className="stat-card"><div className="stat-icon warnings">H</div><div className="stat-info"><div className="stat-value">{agent.hostname || '-'}</div><div className="stat-label">Hostname</div></div></div>
-                    <div className="stat-card"><div className="stat-icon critical">L</div><div className="stat-info"><div className="stat-value">{timeAgo(agent.last_heartbeat)}</div><div className="stat-label">Last Heartbeat</div></div></div>
+                    <div className="stat-card"><div className="stat-icon agents">ID</div><div className="stat-info"><div className="stat-label">Agent ID</div><div style={{ fontSize: 13, wordBreak: 'break-all', fontFamily: 'monospace' }}>{agent.id}</div></div></div>
+                    <div className="stat-card"><div className="stat-icon active">T</div><div className="stat-info"><div className="stat-label">Type</div><div style={{ fontSize: 15, fontWeight: 700 }}>{agent.agent_type}</div></div></div>
+                    <div className="stat-card"><div className="stat-icon warnings">H</div><div className="stat-info"><div className="stat-label">Hostname</div><div style={{ fontSize: 15, fontWeight: 700 }}>{agent.hostname || '-'}</div></div></div>
+                    <div className="stat-card"><div className="stat-icon critical">L</div><div className="stat-info"><div className="stat-label">Last Heartbeat</div><div style={{ fontSize: 15, fontWeight: 700 }}>{timeAgo(agent.last_heartbeat)}</div></div></div>
                 </div>
 
                 {/* Tabs */}
