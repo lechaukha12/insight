@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../components/AuthProvider';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_BASE = '';
 
 async function api(endpoint, opts = {}) {
     const token = typeof window !== 'undefined' ? localStorage.getItem('insight_token') : null;

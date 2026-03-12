@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_BASE = '';
 
 async function fetchRulesAPI(endpoint, options = {}) {
     const token = typeof window !== 'undefined' ? localStorage.getItem('insight_token') : null;

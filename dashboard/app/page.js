@@ -16,7 +16,7 @@ export default function DashboardPage() {
   const [sending, setSending] = useState(false);
   const [wsFlash, setWsFlash] = useState(null);
 
-  const WS_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080').replace(/^http/, 'ws') + '/ws/dashboard';
+  const WS_URL = typeof window !== 'undefined' ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/dashboard` : '';
   const { lastMessage, isConnected } = useWebSocket(WS_URL);
 
   const fetchData = useCallback(async () => {
