@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { getAlertConfigs, createAlertConfig, deleteAlertConfig, getSettings, updateSettings } from '../lib/api';
+import { getAlertConfigs, createAlertConfig, deleteAlertConfig, getSettings, updateSettings, getStorageStats, applyRetention, purgeAllData } from '../lib/api';
+import { useAuth } from '../components/AuthProvider';
 
 const API_BASE = '';
 
@@ -30,6 +31,19 @@ export default function SettingsPage() {
     const [form, setForm] = useState({ name: '', url: '', type: 'slack', events: ['critical', 'error'] });
     const [testResult, setTestResult] = useState({});
 
+    // Retention state
+    const [storageStats, setStorageStats] = useState(null);
+    const [retention, setRetention] = useState({
+        retention_traces_days: 7, retention_logs_days: 14,
+        retention_metrics_days: 30, retention_events_days: 30,
+        retention_processes_days: 3, retention_audit_days: 90
+    });
+    const [retentionSaving, setRetentionSaving] = useState(false);
+    const [retentionMsg, setRetentionMsg] = useState(null);
+    const [confirmPurge, setConfirmPurge] = useState(false);
+
+    const { user } = useAuth();
+
     const fetchData = useCallback(async () => {
         try {
             const [alertData, settingsData] = await Promise.all([getAlertConfigs(), getSettings()]);
@@ -46,6 +60,27 @@ export default function SettingsPage() {
     }, []);
 
     useEffect(() => { fetchData(); fetchWebhooks(); }, [fetchData, fetchWebhooks]);
+
+    // Fetch storage stats when retention tab is selected
+    useEffect(() => {
+        if (tab === 'retention') {
+            getStorageStats().then(d => setStorageStats(d)).catch(console.error);
+        }
+    }, [tab]);
+
+    // Sync retention settings from loaded settings
+    useEffect(() => {
+        if (settings) {
+            setRetention(prev => ({
+                retention_traces_days: settings.retention_traces_days || prev.retention_traces_days,
+                retention_logs_days: settings.retention_logs_days || prev.retention_logs_days,
+                retention_metrics_days: settings.retention_metrics_days || prev.retention_metrics_days,
+                retention_events_days: settings.retention_events_days || prev.retention_events_days,
+                retention_processes_days: settings.retention_processes_days || prev.retention_processes_days,
+                retention_audit_days: settings.retention_audit_days || prev.retention_audit_days,
+            }));
+        }
+    }, [settings]);
 
     // Settings handlers
     const handleAddTelegram = async () => {
@@ -131,6 +166,9 @@ export default function SettingsPage() {
                     </button>
                     <button className={`btn ${tab === 'webhooks' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('webhooks')}>
                         Webhooks
+                    </button>
+                    <button className={`btn ${tab === 'retention' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('retention')}>
+                        🗄️ Data Retention
                     </button>
                 </div>
 
@@ -272,6 +310,154 @@ export default function SettingsPage() {
                                         </tr>
                                     ))}</tbody>
                                 </table>
+                            </div>
+                        )}
+                    </>
+                )}
+
+                {/* ─── Data Retention Tab ─── */}
+                {tab === 'retention' && (
+                    <>
+                        {retentionMsg && (
+                            <div style={{
+                                background: retentionMsg.type === 'success' ? 'var(--color-success-bg)' : 'var(--color-error-bg)',
+                                border: `1px solid ${retentionMsg.type === 'success' ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                                borderRadius: 'var(--radius-sm)', padding: '10px 16px', marginBottom: '16px',
+                                color: retentionMsg.type === 'success' ? 'var(--color-success)' : 'var(--color-error)', fontSize: '13px',
+                            }}>
+                                {retentionMsg.text}
+                            </div>
+                        )}
+
+                        <div className="grid-2">
+                            {/* Retention Policies */}
+                            <div className="card">
+                                <div className="card-header"><div className="card-title">📋 Retention Policies</div></div>
+                                <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '0 0 16px' }}>Set how long data is kept before automatic cleanup.</p>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                    {[
+                                        { key: 'retention_traces_days', label: 'Traces', icon: '🔗', min: 1, max: 90 },
+                                        { key: 'retention_logs_days', label: 'Logs', icon: '📝', min: 1, max: 90 },
+                                        { key: 'retention_metrics_days', label: 'Metrics', icon: '📊', min: 1, max: 365 },
+                                        { key: 'retention_events_days', label: 'Events', icon: '⚡', min: 1, max: 90 },
+                                        { key: 'retention_processes_days', label: 'Processes', icon: '⚙️', min: 1, max: 30 },
+                                        { key: 'retention_audit_days', label: 'Audit Logs', icon: '🔍', min: 1, max: 365 },
+                                    ].map(item => (
+                                        <div key={item.key} style={{
+                                            display: 'flex', alignItems: 'center', gap: 12,
+                                            padding: '10px 14px', background: 'var(--color-bg)', borderRadius: 'var(--radius-sm)',
+                                            border: '1px solid var(--color-border)'
+                                        }}>
+                                            <span style={{ fontSize: 20 }}>{item.icon}</span>
+                                            <span style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{item.label}</span>
+                                            <input type="number" min={item.min} max={item.max}
+                                                value={retention[item.key]} onChange={e => setRetention(p => ({ ...p, [item.key]: parseInt(e.target.value) || item.min }))}
+                                                style={{
+                                                    width: 70, padding: '6px 8px', borderRadius: 'var(--radius-sm)',
+                                                    border: '1px solid var(--color-border)', background: 'var(--color-bg-card)',
+                                                    color: 'var(--color-text)', fontSize: 13, textAlign: 'center'
+                                                }} />
+                                            <span style={{ fontSize: 12, color: 'var(--color-text-muted)', minWidth: 30 }}>days</span>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                                    <button className="btn btn-primary" disabled={retentionSaving} onClick={async () => {
+                                        setRetentionSaving(true); setRetentionMsg(null);
+                                        try {
+                                            await updateSettings(retention);
+                                            const result = await applyRetention();
+                                            setRetentionMsg({ type: 'success', text: `Retention policies applied! ${JSON.stringify(result.retention || {})}` });
+                                            getStorageStats().then(d => setStorageStats(d));
+                                        } catch (err) {
+                                            setRetentionMsg({ type: 'error', text: 'Failed to apply: ' + err.message });
+                                        } finally { setRetentionSaving(false); }
+                                    }}>
+                                        {retentionSaving ? 'Applying...' : '💾 Save & Apply'}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Storage Stats */}
+                            <div className="card">
+                                <div className="card-header"><div className="card-title">💾 Storage Statistics</div></div>
+                                {storageStats?.engine === 'clickhouse' ? (
+                                    storageStats.tables?.length > 0 ? (
+                                        <div className="table-container">
+                                            <table className="data-table">
+                                                <thead><tr>
+                                                    <th>TABLE</th><th>SIZE</th><th>ROWS</th><th>TTL (days)</th><th>DATA RANGE</th>
+                                                </tr></thead>
+                                                <tbody>
+                                                    {storageStats.tables.map(t => (
+                                                        <tr key={t.name}>
+                                                            <td style={{ fontWeight: 600 }}>{t.name}</td>
+                                                            <td><span className="badge badge-info">{t.size}</span></td>
+                                                            <td>{Number(t.rows).toLocaleString()}</td>
+                                                            <td>{t.retention_days ? `${t.retention_days}d` : '-'}</td>
+                                                            <td style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                                                                {t.oldest && t.newest ? `${t.oldest} → ${t.newest}` : '-'}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    ) : (
+                                        <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No data stored yet. Data will appear after ClickHouse receives writes.</p>
+                                    )
+                                ) : (
+                                    <div style={{ padding: 16, background: 'var(--color-bg)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-border)' }}>
+                                        <p style={{ fontWeight: 600, marginBottom: 8 }}>⚠️ ClickHouse not configured</p>
+                                        <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
+                                            Set <code>CLICKHOUSE_URL</code> env var on insight-api to enable storage statistics and retention management.
+                                        </p>
+                                    </div>
+                                )}
+                                <button className="btn btn-secondary" style={{ marginTop: 12 }}
+                                    onClick={() => getStorageStats().then(d => setStorageStats(d))}>
+                                    🔄 Refresh Stats
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Admin-only Purge Section */}
+                        {user?.role === 'admin' && (
+                            <div className="card" style={{ marginTop: 20, border: '1px solid rgba(239,68,68,0.3)' }}>
+                                <div className="card-header">
+                                    <div className="card-title" style={{ color: 'var(--color-error)' }}>⚠️ Danger Zone</div>
+                                </div>
+                                <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '0 0 12px' }}>
+                                    Permanently delete all monitoring data (metrics, logs, traces, events). This action cannot be undone.
+                                </p>
+                                {!confirmPurge ? (
+                                    <button className="btn" style={{
+                                        background: 'rgba(239,68,68,0.1)', color: 'var(--color-error)',
+                                        border: '1px solid rgba(239,68,68,0.3)', fontWeight: 600,
+                                    }} onClick={() => setConfirmPurge(true)}>
+                                        🗑️ Purge All Data
+                                    </button>
+                                ) : (
+                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                        <span style={{ fontSize: 13, color: 'var(--color-error)', fontWeight: 600 }}>Are you sure? This will delete ALL data!</span>
+                                        <button className="btn" style={{
+                                            background: 'var(--color-error)', color: '#fff', fontWeight: 600,
+                                        }} onClick={async () => {
+                                            try {
+                                                const result = await purgeAllData();
+                                                setRetentionMsg({ type: 'success', text: `Data purged: ${Object.entries(result.tables || {}).map(([k, v]) => `${k}: ${v}`).join(', ')}` });
+                                                setConfirmPurge(false);
+                                                getStorageStats().then(d => setStorageStats(d));
+                                            } catch (err) {
+                                                setRetentionMsg({ type: 'error', text: 'Purge failed: ' + err.message });
+                                                setConfirmPurge(false);
+                                            }
+                                        }}>
+                                            Yes, Delete Everything
+                                        </button>
+                                        <button className="btn btn-secondary" onClick={() => setConfirmPurge(false)}>Cancel</button>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </>

@@ -160,6 +160,18 @@ export async function updateSettings(data) {
     return fetchAPI('/api/v1/settings', { method: 'PUT', body: JSON.stringify(data) });
 }
 
+export async function getStorageStats() {
+    return fetchAPI('/api/v1/storage/stats');
+}
+
+export async function applyRetention() {
+    return fetchAPI('/api/v1/retention/apply', { method: 'POST' });
+}
+
+export async function purgeAllData() {
+    return fetchAPI('/api/v1/storage/purge', { method: 'POST' });
+}
+
 // ─── Audit ───
 
 export async function getAuditLogs(params = {}) {
@@ -178,5 +190,9 @@ export async function getProcesses(agentId) {
 export async function getTraces(params = {}) {
     const query = new URLSearchParams(params).toString();
     return fetchAPI(`/api/v1/traces?${query}`);
+}
+
+export async function getTraceSummary(lastHours = 1) {
+    return fetchAPI(`/api/v1/traces/summary?last_hours=${lastHours}`);
 }
 

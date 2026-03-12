@@ -11,6 +11,7 @@ export default function AgentsPage() {
     const [search, setSearch] = useState('');
     const [filterCluster, setFilterCluster] = useState('');
     const [filterStatus, setFilterStatus] = useState('');
+    const [filterCategory, setFilterCategory] = useState('all');
     const [viewMode, setViewMode] = useState('table'); // 'table' or 'grid'
 
     const fetchData = useCallback(async () => {
@@ -35,6 +36,10 @@ export default function AgentsPage() {
         if (search && !a.name?.toLowerCase().includes(search.toLowerCase()) && !a.hostname?.toLowerCase().includes(search.toLowerCase())) return false;
         if (filterCluster && a.cluster_id !== filterCluster) return false;
         if (filterStatus && a.status !== filterStatus) return false;
+        if (filterCategory && filterCategory !== 'all') {
+            const cat = a.agent_category || (a.agent_type === 'opentelemetry' ? 'application' : 'system');
+            if (cat !== filterCategory) return false;
+        }
         return true;
     });
 
@@ -48,6 +53,30 @@ export default function AgentsPage() {
 
     const clusterName = (id) => clusters.find(c => c.id === id)?.name || id || 'Default Cluster';
 
+    const categoryBadge = (agent) => {
+        const cat = agent.agent_category || (agent.agent_type === 'opentelemetry' ? 'application' : 'system');
+        if (cat === 'application') {
+            return <span className="badge" style={{ background: '#7c3aed22', color: '#7c3aed', fontSize: 11 }}>Application</span>;
+        }
+        return <span className="badge" style={{ background: '#0165a722', color: '#0165a7', fontSize: 11 }}>System</span>;
+    };
+
+    const typeBadge = (type) => {
+        const colors = {
+            kubernetes: { bg: '#0165a722', color: '#0165a7' },
+            opentelemetry: { bg: '#7c3aed22', color: '#7c3aed' },
+            system: { bg: '#15803d22', color: '#15803d' },
+            linux: { bg: '#15803d22', color: '#15803d' },
+            windows: { bg: '#b4530922', color: '#b45309' },
+        };
+        const c = colors[type] || { bg: '#66666622', color: '#666' };
+        return <span className="badge" style={{ background: c.bg, color: c.color }}>{type}</span>;
+    };
+
+    // Count agents by category
+    const systemCount = allAgents.filter(a => (a.agent_category || (a.agent_type === 'opentelemetry' ? 'application' : 'system')) === 'system').length;
+    const appCount = allAgents.filter(a => (a.agent_category || (a.agent_type === 'opentelemetry' ? 'application' : 'system')) === 'application').length;
+
     return (
         <>
             <div className="main-header">
@@ -59,6 +88,30 @@ export default function AgentsPage() {
                 </div>
             </div>
             <div className="main-body">
+                {/* Category Tabs */}
+                <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                    <button
+                        className={`btn ${filterCategory === 'all' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setFilterCategory('all')}
+                    >
+                        All ({allAgents.length})
+                    </button>
+                    <button
+                        className={`btn ${filterCategory === 'system' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setFilterCategory('system')}
+                        style={filterCategory === 'system' ? {} : { borderColor: '#0165a744', color: '#0165a7' }}
+                    >
+                        🖥️ System Monitoring ({systemCount})
+                    </button>
+                    <button
+                        className={`btn ${filterCategory === 'application' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setFilterCategory('application')}
+                        style={filterCategory === 'application' ? {} : { borderColor: '#7c3aed44', color: '#7c3aed' }}
+                    >
+                        📊 Application Monitoring ({appCount})
+                    </button>
+                </div>
+
                 {/* Filters */}
                 <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
                     <input className="form-input" style={{ maxWidth: 260 }} placeholder="Search by name or hostname..." value={search} onChange={e => setSearch(e.target.value)} />
@@ -101,7 +154,8 @@ export default function AgentsPage() {
                                                 <span className={`badge ${agent.status === 'active' ? 'active' : 'error'}`}><span className="badge-dot" />{agent.status}</span>
                                             </div>
                                             <div className="agent-card-info">
-                                                <div><span className="agent-card-label">Type</span><span className="badge info">{agent.agent_type}</span></div>
+                                                <div><span className="agent-card-label">Category</span>{categoryBadge(agent)}</div>
+                                                <div><span className="agent-card-label">Type</span>{typeBadge(agent.agent_type)}</div>
                                                 <div><span className="agent-card-label">Host</span><span style={{ fontFamily: 'monospace', fontSize: 12 }}>{agent.hostname || '-'}</span></div>
                                                 <div><span className="agent-card-label">Heartbeat</span><span>{timeAgo(agent.last_heartbeat)}</span></div>
                                             </div>
@@ -111,11 +165,12 @@ export default function AgentsPage() {
                             ) : (
                                 <div className="card" style={{ marginBottom: 0 }}>
                                     <table className="data-table">
-                                        <thead><tr><th>Name</th><th>Type</th><th>Hostname</th><th>Status</th><th>Last Heartbeat</th><th>Created</th></tr></thead>
+                                        <thead><tr><th>Name</th><th>Category</th><th>Type</th><th>Hostname</th><th>Status</th><th>Last Heartbeat</th><th>Created</th></tr></thead>
                                         <tbody>{agents.map(agent => (
                                             <tr key={agent.id} onClick={() => window.location.href = `/agents/${agent.id}`} style={{ cursor: 'pointer' }}>
                                                 <td style={{ fontWeight: 600 }}>{agent.name}<div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{agent.id?.slice(0, 12)}...</div></td>
-                                                <td><span className="badge info">{agent.agent_type}</span></td>
+                                                <td>{categoryBadge(agent)}</td>
+                                                <td>{typeBadge(agent.agent_type)}</td>
                                                 <td style={{ fontFamily: 'monospace', fontSize: 13 }}>{agent.hostname || '-'}</td>
                                                 <td><span className={`badge ${agent.status === 'active' ? 'active' : 'error'}`}><span className="badge-dot" />{agent.status}</span></td>
                                                 <td>{timeAgo(agent.last_heartbeat)}</td>

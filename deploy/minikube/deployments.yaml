@@ -27,6 +27,9 @@ spec:
                 name: insight-config
             - secretRef:
                 name: insight-secrets
+          env:
+            - name: CLICKHOUSE_URL
+              value: "http://clickhouse:8123"
           volumeMounts:
             - name: data
               mountPath: /data

@@ -1,16 +1,17 @@
 """
-Insight Linux Agent - System Resource Monitoring Agent v5.1.0
+Insight System Agent v6.0.0 — Unified System Resource Monitoring
 
-Monitors Linux server resources and sends data to Insight Core API:
-- CPU usage (total + per-core)
-- Memory usage (total, used, available)
-- Disk usage (per mount point)
-- Load average
+Auto-detects OS (Linux/Windows/macOS) and monitors:
+- CPU usage (total + per-core + load average on Unix)
+- Memory usage (total, used, available, swap)
+- Disk usage (per mount/drive)
 - Network I/O
-- Uptime
-- Process count
+- Uptime / Process count
 - Process list with CPU/RAM per process (top 30)
-- System log collection (syslog/journald)
+- System log collection:
+  - Linux: journald / syslog files
+  - Windows: Windows Event Log (WMI / PowerShell)
+  - macOS: /var/log/system.log
 
 Supports two modes:
 1. Real-time monitoring (every SCAN_INTERVAL seconds)
@@ -34,8 +35,12 @@ import requests
 
 CORE_API_URL = os.getenv("INSIGHT_CORE_URL", "http://localhost:8080")
 API_KEY = os.getenv("INSIGHT_API_KEY", "insight-secret-key")
-AGENT_ID = os.getenv("AGENT_ID", f"linux-agent-{socket.gethostname()}")
-AGENT_NAME = os.getenv("AGENT_NAME", f"Linux Agent ({socket.gethostname()})")
+
+OS_TYPE = platform.system().lower()  # 'linux', 'windows', 'darwin'
+HOSTNAME = socket.gethostname()
+
+AGENT_ID = os.getenv("AGENT_ID", f"system-agent-{HOSTNAME}")
+AGENT_NAME = os.getenv("AGENT_NAME", f"System Agent ({HOSTNAME})")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "30"))
 DAILY_SCAN_HOUR = int(os.getenv("DAILY_SCAN_HOUR", "0"))
 DAILY_SCAN_MINUTE = int(os.getenv("DAILY_SCAN_MINUTE", "45"))
@@ -45,7 +50,7 @@ CPU_THRESHOLD = float(os.getenv("CPU_THRESHOLD", "90"))
 MEMORY_THRESHOLD = float(os.getenv("MEMORY_THRESHOLD", "90"))
 DISK_THRESHOLD = float(os.getenv("DISK_THRESHOLD", "95"))
 
-# Log collection config
+# Log collection config (Linux only)
 LOG_FILES = os.getenv("LOG_FILES", "/var/log/syslog,/var/log/messages,/var/log/auth.log").split(",")
 LOG_LINES = int(os.getenv("LOG_LINES", "50"))
 USE_JOURNALD = os.getenv("USE_JOURNALD", "auto")  # auto, true, false
@@ -56,7 +61,7 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("insight.linux-agent")
+logger = logging.getLogger("insight.system-agent")
 
 # Import psutil
 try:
@@ -65,16 +70,23 @@ except ImportError:
     logger.error("psutil not installed. Install with: pip install psutil")
     sys.exit(1)
 
+# Optional Windows-specific imports
+wmi_available = False
+if OS_TYPE == "windows":
+    try:
+        import wmi as wmi_module
+        wmi_available = True
+    except ImportError:
+        logger.warning("wmi package not available - using PowerShell for event logs")
 
-# ─── Core API Communication ───
 
+# ═══════════════════════════════════════════════════════════
+# Core API Communication
+# ═══════════════════════════════════════════════════════════
 
 def send_to_core(endpoint: str, data: dict) -> bool:
     url = f"{CORE_API_URL}{endpoint}"
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-Key": API_KEY,
-    }
+    headers = {"Content-Type": "application/json", "X-API-Key": API_KEY}
     try:
         resp = requests.post(url, json=data, headers=headers, timeout=30)
         if resp.status_code < 300:
@@ -92,40 +104,28 @@ def send_heartbeat():
     send_to_core(f"/api/v1/agents/{AGENT_ID}/heartbeat", {})
 
 
-# ─── System Metrics Collection ───
-
+# ═══════════════════════════════════════════════════════════
+# System Metrics Collection (Cross-Platform via psutil)
+# ═══════════════════════════════════════════════════════════
 
 def collect_cpu_metrics() -> list[dict]:
-    """Collect CPU usage metrics."""
+    """Collect CPU usage metrics (cross-platform)."""
     metrics = []
-    hostname = socket.gethostname()
-    labels = {"host": hostname}
+    labels = {"host": HOSTNAME, "os": OS_TYPE}
 
     # Overall CPU percent
     cpu_percent = psutil.cpu_percent(interval=1)
-    metrics.append({
-        "metric_name": "cpu_percent",
-        "metric_value": cpu_percent,
-        "labels": labels,
-    })
+    metrics.append({"metric_name": "cpu_percent", "metric_value": cpu_percent, "labels": labels})
 
     # Per-core usage
     per_core = psutil.cpu_percent(interval=0.5, percpu=True)
     for i, core_pct in enumerate(per_core):
-        metrics.append({
-            "metric_name": "cpu_core_percent",
-            "metric_value": core_pct,
-            "labels": {**labels, "core": str(i)},
-        })
+        metrics.append({"metric_name": "cpu_core_percent", "metric_value": core_pct, "labels": {**labels, "core": str(i)}})
 
     # CPU count
-    metrics.append({
-        "metric_name": "cpu_count",
-        "metric_value": float(psutil.cpu_count()),
-        "labels": labels,
-    })
+    metrics.append({"metric_name": "cpu_count", "metric_value": float(psutil.cpu_count()), "labels": labels})
 
-    # Load average (Unix only)
+    # Load average (Unix only — Linux/macOS)
     try:
         load1, load5, load15 = os.getloadavg()
         metrics.extend([
@@ -134,16 +134,15 @@ def collect_cpu_metrics() -> list[dict]:
             {"metric_name": "load_avg_15m", "metric_value": load15, "labels": labels},
         ])
     except (OSError, AttributeError):
-        pass  # Not available on all systems
+        pass  # Not available on Windows
 
     return metrics
 
 
 def collect_memory_metrics() -> list[dict]:
-    """Collect memory usage metrics."""
+    """Collect memory usage metrics (cross-platform)."""
     metrics = []
-    hostname = socket.gethostname()
-    labels = {"host": hostname}
+    labels = {"host": HOSTNAME, "os": OS_TYPE}
 
     mem = psutil.virtual_memory()
     metrics.extend([
@@ -165,19 +164,19 @@ def collect_memory_metrics() -> list[dict]:
 
 
 def collect_disk_metrics() -> list[dict]:
-    """Collect disk usage metrics for all mount points."""
+    """Collect disk usage metrics for all mount points/drives (cross-platform)."""
     metrics = []
-    hostname = socket.gethostname()
 
-    partitions = psutil.disk_partitions()
-    for partition in partitions:
-        # Skip special filesystems
-        if partition.fstype in ("squashfs", "tmpfs", "devtmpfs", "overlay"):
+    # Skip virtual/special filesystems
+    skip_fstypes = {"squashfs", "tmpfs", "devtmpfs", "overlay", "devfs", "autofs"}
+
+    for partition in psutil.disk_partitions():
+        if partition.fstype in skip_fstypes:
             continue
         try:
             usage = psutil.disk_usage(partition.mountpoint)
             labels = {
-                "host": hostname,
+                "host": HOSTNAME, "os": OS_TYPE,
                 "mountpoint": partition.mountpoint,
                 "device": partition.device,
                 "fstype": partition.fstype,
@@ -195,7 +194,7 @@ def collect_disk_metrics() -> list[dict]:
     try:
         disk_io = psutil.disk_io_counters()
         if disk_io:
-            labels = {"host": hostname}
+            labels = {"host": HOSTNAME, "os": OS_TYPE}
             metrics.extend([
                 {"metric_name": "disk_read_bytes_total", "metric_value": float(disk_io.read_bytes), "labels": labels},
                 {"metric_name": "disk_write_bytes_total", "metric_value": float(disk_io.write_bytes), "labels": labels},
@@ -207,10 +206,9 @@ def collect_disk_metrics() -> list[dict]:
 
 
 def collect_network_metrics() -> list[dict]:
-    """Collect network I/O metrics."""
+    """Collect network I/O metrics (cross-platform)."""
     metrics = []
-    hostname = socket.gethostname()
-    labels = {"host": hostname}
+    labels = {"host": HOSTNAME, "os": OS_TYPE}
 
     try:
         net_io = psutil.net_io_counters()
@@ -229,45 +227,42 @@ def collect_network_metrics() -> list[dict]:
 
 
 def collect_system_info() -> list[dict]:
-    """Collect general system info metrics."""
+    """Collect general system info metrics (cross-platform)."""
     metrics = []
-    hostname = socket.gethostname()
-    labels = {"host": hostname}
+    labels = {"host": HOSTNAME, "os": OS_TYPE, "release": platform.release(), "version": platform.version()}
 
     # Uptime
     boot_time = psutil.boot_time()
     uptime_seconds = time.time() - boot_time
-    metrics.append({
-        "metric_name": "uptime_seconds",
-        "metric_value": uptime_seconds,
-        "labels": {**labels, "os": platform.system(), "release": platform.release()},
-    })
+    metrics.append({"metric_name": "uptime_seconds", "metric_value": uptime_seconds, "labels": labels})
 
     # Process count
-    metrics.append({
-        "metric_name": "process_count",
-        "metric_value": float(len(psutil.pids())),
-        "labels": labels,
-    })
+    metrics.append({"metric_name": "process_count", "metric_value": float(len(psutil.pids())), "labels": {"host": HOSTNAME, "os": OS_TYPE}})
 
     return metrics
 
 
-# ─── Process List (NEW v5.1.0) ───
-
+# ═══════════════════════════════════════════════════════════
+# Process List (Cross-Platform)
+# ═══════════════════════════════════════════════════════════
 
 def collect_process_list() -> list[dict]:
-    """Collect top 30 processes sorted by CPU usage."""
+    """Collect top 30 processes sorted by CPU usage (cross-platform)."""
     processes = []
     try:
         for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent',
                                           'memory_info', 'status', 'cmdline', 'create_time']):
             try:
                 info = proc.info
+                username = info["username"] or "system"
+                # Windows: Remove domain prefix (DOMAIN\user -> user)
+                if OS_TYPE == "windows" and "\\" in username:
+                    username = username.split("\\")[-1]
+
                 processes.append({
                     "pid": info["pid"],
                     "name": info["name"] or "unknown",
-                    "username": info["username"] or "system",
+                    "username": username,
                     "cpu_percent": info["cpu_percent"] or 0.0,
                     "memory_percent": round(info["memory_percent"] or 0.0, 1),
                     "memory_mb": round((info["memory_info"].rss / 1048576) if info["memory_info"] else 0, 1),
@@ -280,15 +275,18 @@ def collect_process_list() -> list[dict]:
     except Exception as e:
         logger.error(f"Process collection error: {e}")
 
-    # Sort by CPU usage descending, return top 30
     processes.sort(key=lambda x: x["cpu_percent"], reverse=True)
     return processes[:30]
 
 
-# ─── System Log Collection (NEW v5.1.0) ───
+# ═══════════════════════════════════════════════════════════
+# System Log Collection (OS-Specific)
+# ═══════════════════════════════════════════════════════════
 
 _last_log_position = {}  # file -> position
 
+
+# ─── Linux Logs ───
 
 def _has_journald():
     """Check if systemd-journald is available."""
@@ -300,7 +298,7 @@ def _has_journald():
 
 
 def _collect_journald_logs() -> list[dict]:
-    """Collect recent system logs from journald."""
+    """Collect recent system logs from journald (Linux)."""
     logs = []
     try:
         result = subprocess.run(
@@ -332,7 +330,7 @@ def _collect_journald_logs() -> list[dict]:
 
 
 def _collect_file_logs() -> list[dict]:
-    """Collect recent error/warning lines from log files."""
+    """Collect recent error/warning lines from log files (Linux/macOS)."""
     logs = []
     error_keywords = ["error", "fail", "critical", "panic", "fatal", "denied", "refused", "timeout"]
 
@@ -342,16 +340,14 @@ def _collect_file_logs() -> list[dict]:
             continue
 
         try:
-            # Read from last position
             last_pos = _last_log_position.get(log_file, 0)
             with open(log_file, "r", errors="ignore") as f:
-                f.seek(0, 2)  # Seek to end
+                f.seek(0, 2)
                 file_size = f.tell()
 
                 if last_pos > file_size:
                     last_pos = 0  # File was rotated
 
-                # Read from last position or last 8KB
                 if last_pos == 0:
                     start = max(0, file_size - 8192)
                 else:
@@ -361,7 +357,6 @@ def _collect_file_logs() -> list[dict]:
                 lines = f.readlines()
                 _last_log_position[log_file] = f.tell()
 
-            # Filter for error/warning lines
             for line in lines[-LOG_LINES:]:
                 line_lower = line.lower()
                 if any(kw in line_lower for kw in error_keywords):
@@ -378,21 +373,131 @@ def _collect_file_logs() -> list[dict]:
     return logs
 
 
-def collect_system_logs() -> list[dict]:
-    """Collect system logs from journald or log files."""
+def _collect_linux_logs() -> list[dict]:
+    """Collect system logs on Linux (journald or file-based)."""
     use_jd = USE_JOURNALD.lower()
     if use_jd == "true" or (use_jd == "auto" and _has_journald()):
         return _collect_journald_logs()
     return _collect_file_logs()
 
 
-# ─── Alert Logic ───
+# ─── Windows Logs ───
 
+def _collect_windows_events() -> list[dict]:
+    """Collect recent Windows Event Log errors."""
+    events = []
+
+    # Method 1: WMI
+    if wmi_available:
+        try:
+            c = wmi_module.WMI()
+            for log_source in ["System", "Application"]:
+                try:
+                    cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%Y%m%d%H%M%S")
+                    wql = (
+                        f"SELECT * FROM Win32_NTLogEvent "
+                        f"WHERE Logfile='{log_source}' AND EventType<=3 "
+                        f"AND TimeWritten > '{cutoff}.000000+000'"
+                    )
+                    for event in c.query(wql)[:20]:
+                        level = "critical" if event.EventType == 1 else "error" if event.EventType == 2 else "warning"
+                        events.append({
+                            "level": level,
+                            "source": f"{log_source}/{event.SourceName}",
+                            "message": (event.Message or "")[:500],
+                            "details": {"event_id": event.EventCode, "log": log_source, "source_name": event.SourceName},
+                        })
+                except Exception as e:
+                    logger.debug(f"Failed to query {log_source} events: {e}")
+        except Exception as e:
+            logger.error(f"WMI query failed: {e}")
+
+    # Method 2: PowerShell fallback
+    else:
+        try:
+            result = subprocess.run(
+                ["powershell", "-Command",
+                 "Get-EventLog -LogName System -EntryType Error,Warning -Newest 20 | "
+                 "Select-Object TimeGenerated,EntryType,Source,Message | ConvertTo-Json"],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                entries = json.loads(result.stdout)
+                if isinstance(entries, dict):
+                    entries = [entries]
+                for entry in entries:
+                    level = "error" if entry.get("EntryType") == 1 else "warning"
+                    events.append({
+                        "level": level,
+                        "source": f"System/{entry.get('Source', '')}",
+                        "message": (entry.get("Message", ""))[:500],
+                    })
+        except Exception as e:
+            logger.debug(f"PowerShell event query failed: {e}")
+
+    return events
+
+
+# ─── macOS Logs ───
+
+def _collect_macos_logs() -> list[dict]:
+    """Collect recent macOS system logs."""
+    logs = []
+    try:
+        result = subprocess.run(
+            ["log", "show", "--predicate", "eventType == logEvent AND messageType == error",
+             "--last", "5m", "--style", "compact"],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n")[-LOG_LINES:]:
+                if not line.strip() or line.startswith("Filtering"):
+                    continue
+                logs.append({"level": "error", "source": "system.log", "message": line.strip()[:500]})
+    except Exception as e:
+        logger.debug(f"macOS log query failed: {e}")
+
+    # Also try reading /var/log/system.log
+    macos_log_files = ["/var/log/system.log"]
+    for log_file in macos_log_files:
+        if Path(log_file).exists():
+            try:
+                with open(log_file, "r", errors="ignore") as f:
+                    f.seek(0, 2)
+                    size = f.tell()
+                    f.seek(max(0, size - 8192))
+                    for line in f.readlines()[-20:]:
+                        if any(kw in line.lower() for kw in ["error", "fail", "critical", "fatal"]):
+                            logs.append({"level": "error", "source": "system.log", "message": line.strip()[:500]})
+            except (PermissionError, OSError):
+                pass
+
+    return logs
+
+
+# ─── Unified Log Collector ───
+
+def collect_system_logs() -> list[dict]:
+    """Collect system logs based on detected OS."""
+    if OS_TYPE == "linux":
+        return _collect_linux_logs()
+    elif OS_TYPE == "windows":
+        return _collect_windows_events()
+    elif OS_TYPE == "darwin":
+        return _collect_macos_logs()
+    else:
+        logger.warning(f"Unsupported OS for log collection: {OS_TYPE}")
+        return _collect_file_logs()  # Fallback to file-based
+
+
+# ═══════════════════════════════════════════════════════════
+# Alert Logic
+# ═══════════════════════════════════════════════════════════
 
 def check_thresholds(metrics: list[dict]) -> list[dict]:
     """Check metrics against thresholds and generate alert events."""
     events = []
-    hostname = socket.gethostname()
+    os_label = OS_TYPE
 
     for m in metrics:
         name = m.get("metric_name", "")
@@ -403,18 +508,18 @@ def check_thresholds(metrics: list[dict]) -> list[dict]:
             events.append({
                 "level": "critical" if value > CPU_THRESHOLD + 5 else "error",
                 "title": f"CPU usage cao: {value:.1f}%",
-                "message": f"Server {hostname}: CPU = {value:.1f}% (ngưỡng: {CPU_THRESHOLD}%)",
-                "source": f"linux/{hostname}",
-                "resource": hostname,
+                "message": f"Server {HOSTNAME}: CPU = {value:.1f}% (ngưỡng: {CPU_THRESHOLD}%)",
+                "source": f"{os_label}/{HOSTNAME}",
+                "resource": HOSTNAME,
             })
 
         elif name == "memory_percent" and value > MEMORY_THRESHOLD:
             events.append({
                 "level": "critical" if value > MEMORY_THRESHOLD + 5 else "error",
                 "title": f"Memory usage cao: {value:.1f}%",
-                "message": f"Server {hostname}: RAM = {value:.1f}% (ngưỡng: {MEMORY_THRESHOLD}%)",
-                "source": f"linux/{hostname}",
-                "resource": hostname,
+                "message": f"Server {HOSTNAME}: RAM = {value:.1f}% (ngưỡng: {MEMORY_THRESHOLD}%)",
+                "source": f"{os_label}/{HOSTNAME}",
+                "resource": HOSTNAME,
             })
 
         elif name == "disk_percent" and value > DISK_THRESHOLD:
@@ -422,16 +527,17 @@ def check_thresholds(metrics: list[dict]) -> list[dict]:
             events.append({
                 "level": "critical" if value > DISK_THRESHOLD + 2 else "error",
                 "title": f"Disk usage cao: {mountpoint} = {value:.1f}%",
-                "message": f"Server {hostname}: Disk {mountpoint} = {value:.1f}% (ngưỡng: {DISK_THRESHOLD}%)",
-                "source": f"linux/{hostname}",
-                "resource": hostname,
+                "message": f"Server {HOSTNAME}: Disk {mountpoint} = {value:.1f}% (ngưỡng: {DISK_THRESHOLD}%)",
+                "source": f"{os_label}/{HOSTNAME}",
+                "resource": HOSTNAME,
             })
 
     return events
 
 
-# ─── Main Loop ───
-
+# ═══════════════════════════════════════════════════════════
+# Main Loop
+# ═══════════════════════════════════════════════════════════
 
 def run_scan():
     """Run a full metric scan and send to core."""
@@ -452,8 +558,9 @@ def run_scan():
         send_to_core("/api/v1/metrics", {
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
-            "agent_type": "linux",
-            "hostname": socket.gethostname(),
+            "agent_type": "system",
+            "agent_category": "system",
+            "hostname": HOSTNAME,
             "metrics": all_metrics,
         })
 
@@ -462,8 +569,9 @@ def run_scan():
         send_to_core("/api/v1/events", {
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
-            "agent_type": "linux",
-            "hostname": socket.gethostname(),
+            "agent_type": "system",
+            "agent_category": "system",
+            "hostname": HOSTNAME,
             "events": events,
         })
 
@@ -481,8 +589,9 @@ def run_scan():
         send_to_core("/api/v1/logs", {
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
-            "agent_type": "linux",
-            "hostname": socket.gethostname(),
+            "agent_type": "system",
+            "agent_category": "system",
+            "hostname": HOSTNAME,
             "logs": sys_logs,
         })
 
@@ -496,12 +605,7 @@ def run_daily_scan():
     """Full comprehensive scan for daily report."""
     logger.info("Running daily comprehensive scan...")
     run_scan()
-
-    # Trigger report
-    send_to_core("/api/v1/reports/generate", {
-        "report_type": "daily",
-        "channels": ["telegram"],
-    })
+    send_to_core("/api/v1/reports/generate", {"report_type": "daily", "channels": ["telegram"]})
     logger.info("Daily scan complete, report triggered")
 
 
@@ -511,15 +615,21 @@ def check_daily_schedule():
 
 
 def main():
-    logger.info(f"Insight Linux Agent v5.1.0 starting...")
-    logger.info(f"   Agent ID: {AGENT_ID}")
-    logger.info(f"   Hostname: {socket.gethostname()}")
-    logger.info(f"   OS: {platform.system()} {platform.release()}")
-    logger.info(f"   Core URL: {CORE_API_URL}")
-    logger.info(f"   Scan Interval: {SCAN_INTERVAL}s")
-    logger.info(f"   Thresholds: CPU={CPU_THRESHOLD}%, RAM={MEMORY_THRESHOLD}%, Disk={DISK_THRESHOLD}%")
-    logger.info(f"   Log files: {LOG_FILES}")
-    logger.info(f"   Journald: {USE_JOURNALD}")
+    os_display = {"linux": "Linux", "windows": "Windows", "darwin": "macOS"}.get(OS_TYPE, OS_TYPE)
+
+    logger.info(f"═══ Insight System Agent v6.0.0 ═══")
+    logger.info(f"  Agent ID:      {AGENT_ID}")
+    logger.info(f"  Agent Name:    {AGENT_NAME}")
+    logger.info(f"  Hostname:      {HOSTNAME}")
+    logger.info(f"  OS:            {os_display} ({platform.release()})")
+    logger.info(f"  Core URL:      {CORE_API_URL}")
+    logger.info(f"  Scan Interval: {SCAN_INTERVAL}s")
+    logger.info(f"  Thresholds:    CPU={CPU_THRESHOLD}%, RAM={MEMORY_THRESHOLD}%, Disk={DISK_THRESHOLD}%")
+    if OS_TYPE == "linux":
+        logger.info(f"  Log files:     {LOG_FILES}")
+        logger.info(f"  Journald:      {USE_JOURNALD}")
+    elif OS_TYPE == "windows":
+        logger.info(f"  WMI:           {'available' if wmi_available else 'not available (using PowerShell)'}")
 
     daily_done_today = False
     last_scan_day = None

@@ -32,7 +32,8 @@ from shared.database.db import (
     insert_audit_log, get_audit_logs,
     save_webhook, get_webhooks, delete_webhook, toggle_webhook,
     save_process_snapshot, get_process_snapshot,
-    insert_traces, get_traces,
+    insert_traces, get_traces, get_trace_summary,
+    get_storage_stats, apply_retention_policies, purge_all_data,
 )
 from api_gateway.auth import (
     hash_password, verify_password, create_token, verify_token,
@@ -178,12 +179,16 @@ async def create_new_cluster(request: Request, user: dict = Depends(require_role
 async def register_new_agent(request: Request):
     body = await request.json()
     agent = register_agent(name=body.get("name","unnamed"), agent_type=body.get("agent_type","unknown"),
-                           hostname=body.get("hostname",""), labels=body.get("labels",{}), cluster_id=body.get("cluster_id","default"))
+                           hostname=body.get("hostname",""), labels=body.get("labels",{}),
+                           cluster_id=body.get("cluster_id","default"), agent_category=body.get("agent_category"))
     return {"status": "registered", "agent": agent}
 
 @app.get("/api/v1/agents")
-async def get_all_agents(cluster_id: str = Query(None)):
+async def get_all_agents(cluster_id: str = Query(None), category: str = Query(None)):
     agents = list_agents(cluster_id=cluster_id)
+    # Filter by category if specified
+    if category and category != 'all':
+        agents = [a for a in agents if a.get('agent_category') == category]
     return {"agents": agents, "total": len(agents)}
 
 @app.get("/api/v1/agents/{agent_id}")
@@ -206,7 +211,7 @@ async def receive_metrics(request: Request):
     body = await request.json()
     agent_id = body.get("agent_id","")
     get_or_create_agent(agent_id, body.get("agent_name",agent_id), body.get("agent_type","unknown"),
-                        body.get("hostname",""), body.get("cluster_id","default"))
+                        body.get("hostname",""), body.get("cluster_id","default"), agent_category=body.get("agent_category"))
     metrics = body.get("metrics", [])
     if metrics:
         insert_metrics(agent_id, metrics)
@@ -243,7 +248,8 @@ async def chart_events(last_hours: int = Query(24)):
 async def receive_events(request: Request):
     body = await request.json()
     agent_id = body.get("agent_id","")
-    get_or_create_agent(agent_id, body.get("agent_name",agent_id), body.get("agent_type","unknown"))
+    get_or_create_agent(agent_id, body.get("agent_name",agent_id), body.get("agent_type","unknown"),
+                        agent_category=body.get("agent_category"))
     events = body.get("events", [])
     if events:
         insert_events(agent_id, events)
@@ -274,7 +280,8 @@ async def ack_event(event_id: str):
 async def receive_logs(request: Request):
     body = await request.json()
     agent_id = body.get("agent_id","")
-    get_or_create_agent(agent_id, body.get("agent_name",agent_id), body.get("agent_type","unknown"))
+    get_or_create_agent(agent_id, body.get("agent_name",agent_id), body.get("agent_type","unknown"),
+                        agent_category=body.get("agent_category"))
     logs = body.get("logs", [])
     if logs:
         insert_logs(agent_id, logs)
@@ -550,7 +557,7 @@ async def query_processes(agent_id: str = None):
 
 # ─── Traces ───
 
-@app.post("/api/v1/traces", dependencies=[Depends(require_auth)])
+@app.post("/api/v1/traces")
 async def receive_traces(request: Request):
     data = await request.json()
     agent_id = data.get("agent_id")
@@ -565,7 +572,32 @@ async def query_traces(agent_id: str = None, last_hours: int = 24, limit: int = 
     result = get_traces(agent_id=agent_id, last_hours=last_hours, limit=limit)
     return {"traces": result, "total": len(result)}
 
+@app.get("/api/v1/traces/summary")
+async def trace_summary(last_hours: int = 1):
+    """Aggregate trace stats for Application Monitoring dashboard."""
+    return get_trace_summary(last_hours=last_hours)
+
+@app.get("/api/v1/storage/stats", dependencies=[Depends(require_auth)])
+async def storage_stats():
+    """Get storage statistics per table."""
+    return get_storage_stats()
+
+@app.post("/api/v1/retention/apply", dependencies=[Depends(require_auth)])
+async def retention_apply():
+    """Apply retention policies from settings to ClickHouse TTL."""
+    result = apply_retention_policies()
+    return result
+
+@app.post("/api/v1/storage/purge")
+async def storage_purge(user=Depends(get_current_user)):
+    """Purge all time-series data (admin only)."""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Only admin users can purge data")
+    result = purge_all_data()
+    insert_audit_log(user_id=user.get("id", "system"), username=user.get("username", "system"),
+                     action="purge_all_data", resource="storage", details=result)
+    return result
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
-

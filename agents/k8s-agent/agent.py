@@ -357,6 +357,7 @@ def run_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
+            "agent_category": "system",
             "hostname": CLUSTER_NAME,
             "metrics": all_metrics,
         })
@@ -367,6 +368,7 @@ def run_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
+            "agent_category": "system",
             "hostname": CLUSTER_NAME,
             "events": all_events,
         })
@@ -377,6 +379,7 @@ def run_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
+            "agent_category": "system",
             "hostname": CLUSTER_NAME,
             "logs": pod_logs,
         })
@@ -405,6 +408,7 @@ def run_daily_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
+            "agent_category": "system",
             "hostname": CLUSTER_NAME,
             "metrics": all_metrics,
         })
@@ -414,6 +418,7 @@ def run_daily_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
+            "agent_category": "system",
             "hostname": CLUSTER_NAME,
             "events": all_events,
         })
@@ -423,6 +428,7 @@ def run_daily_scan():
             "agent_id": AGENT_ID,
             "agent_name": AGENT_NAME,
             "agent_type": "kubernetes",
+            "agent_category": "system",
             "hostname": CLUSTER_NAME,
             "logs": pod_logs,
         })
