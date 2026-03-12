@@ -88,10 +88,12 @@ spec:
       containers:
         - name: dashboard
           image: lechaukha12/insight-dashboard:v5.1.0
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 3000
           env:
+            - name: BACKEND_URL
+              value: "http://insight-api:8080"
             - name: NEXT_PUBLIC_API_URL
               value: "http://insight-api:8080"
           resources:
