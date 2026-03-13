@@ -324,25 +324,37 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 18
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 15
+            initialDelaySeconds: 0
             periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
           readinessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 5
+            initialDelaySeconds: 0
             periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 5
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 200m
+              memory: 256Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: "1"
+              memory: 1Gi
       volumes:
         - name: data
           persistentVolumeClaim:
