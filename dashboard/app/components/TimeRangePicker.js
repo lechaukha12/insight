@@ -96,36 +96,35 @@ export default function TimeRangePicker() {
                 .time-range-picker {
                     display: flex;
                     align-items: center;
-                    gap: 8px;
-                    padding: 6px 12px;
-                    background: var(--card-bg, #1a1a2e);
-                    border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-                    border-radius: 10px;
+                    gap: 6px;
+                    padding: 4px 10px;
+                    background: var(--bg-card, rgba(255, 250, 220, 0.85));
+                    border: 1px solid var(--border-color, rgba(201, 177, 0, 0.25));
+                    border-radius: 8px;
                     position: relative;
-                    flex-wrap: wrap;
                 }
                 .trp-live {
                     display: flex;
                     align-items: center;
-                    gap: 5px;
-                    padding: 5px 12px;
-                    border: 1px solid rgba(255,255,255,0.1);
-                    border-radius: 6px;
+                    gap: 4px;
+                    padding: 3px 10px;
+                    border: 1px solid var(--border-color, rgba(201, 177, 0, 0.25));
+                    border-radius: 5px;
                     background: transparent;
-                    color: var(--text-muted, #666);
-                    font-size: 12px;
+                    color: var(--text-muted, #7a7050);
+                    font-size: 11px;
                     font-weight: 600;
                     cursor: pointer;
                     transition: all 0.2s;
                 }
                 .trp-live.active {
-                    background: rgba(16, 185, 129, 0.15);
-                    border-color: rgba(16, 185, 129, 0.4);
-                    color: #10b981;
+                    background: rgba(21, 128, 61, 0.12);
+                    border-color: rgba(21, 128, 61, 0.4);
+                    color: #15803d;
                 }
                 .trp-live-dot {
-                    width: 7px;
-                    height: 7px;
+                    width: 6px;
+                    height: 6px;
                     border-radius: 50%;
                     background: currentColor;
                     animation: ${isLive ? 'pulse 1.5s infinite' : 'none'};
@@ -136,17 +135,17 @@ export default function TimeRangePicker() {
                 }
                 .trp-presets {
                     display: flex;
-                    gap: 2px;
-                    background: rgba(0,0,0,0.2);
-                    border-radius: 6px;
+                    gap: 1px;
+                    background: rgba(201, 177, 0, 0.12);
+                    border-radius: 5px;
                     padding: 2px;
                 }
                 .trp-preset {
-                    padding: 4px 10px;
+                    padding: 3px 8px;
                     border: none;
-                    border-radius: 5px;
+                    border-radius: 4px;
                     background: transparent;
-                    color: var(--text-muted, #888);
+                    color: var(--text-muted, #7a7050);
                     font-size: 11px;
                     font-weight: 600;
                     cursor: pointer;
@@ -154,66 +153,68 @@ export default function TimeRangePicker() {
                     white-space: nowrap;
                 }
                 .trp-preset:hover {
-                    color: var(--text-primary, #fff);
-                    background: rgba(255,255,255,0.05);
+                    color: var(--text-primary, #1a1a1a);
+                    background: rgba(255, 243, 180, 0.6);
                 }
                 .trp-preset.active {
-                    background: var(--color-primary, #d4a843);
-                    color: #000;
+                    background: var(--blue, #0165a7);
+                    color: #fff;
                 }
                 .trp-display {
                     margin-left: auto;
-                    font-size: 11px;
-                    color: var(--text-muted, #888);
-                    font-family: 'SF Mono', monospace;
+                    font-size: 10px;
+                    color: var(--text-muted, #7a7050);
+                    font-family: 'SF Mono', 'Consolas', monospace;
                     white-space: nowrap;
                 }
                 .trp-custom-dropdown {
                     position: absolute;
-                    top: calc(100% + 8px);
+                    top: calc(100% + 6px);
                     right: 0;
-                    background: var(--card-bg, #1a1a2e);
-                    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
-                    border-radius: 10px;
-                    padding: 16px;
+                    background: var(--bg-card, rgba(255, 250, 220, 0.98));
+                    border: 1px solid var(--border-color, rgba(201, 177, 0, 0.3));
+                    border-radius: 8px;
+                    padding: 12px;
                     z-index: 100;
-                    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-                    min-width: 280px;
+                    box-shadow: 0 6px 24px rgba(0,0,0,0.12);
+                    min-width: 260px;
+                    backdrop-filter: blur(8px);
                 }
                 .trp-custom-row {
                     display: flex;
                     align-items: center;
-                    gap: 10px;
-                    margin-bottom: 10px;
+                    gap: 8px;
+                    margin-bottom: 8px;
                 }
                 .trp-custom-row label {
-                    font-size: 12px;
+                    font-size: 11px;
                     font-weight: 600;
-                    color: var(--text-secondary, #aaa);
-                    min-width: 36px;
+                    color: var(--text-secondary, #3a3a3a);
+                    min-width: 32px;
                 }
                 .trp-custom-row input {
                     flex: 1;
-                    padding: 6px 10px;
-                    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
-                    border-radius: 6px;
-                    background: rgba(0,0,0,0.2);
-                    color: var(--text-primary, #fff);
+                    padding: 5px 8px;
+                    border: 1px solid var(--border-color, rgba(201, 177, 0, 0.3));
+                    border-radius: 5px;
+                    background: var(--bg-input, rgba(255, 248, 200, 0.8));
+                    color: var(--text-primary, #1a1a1a);
                     font-size: 12px;
                     outline: none;
                 }
                 .trp-custom-row input:focus {
-                    border-color: var(--color-primary, #d4a843);
+                    border-color: var(--blue, #0165a7);
+                    box-shadow: 0 0 0 2px rgba(1, 101, 167, 0.15);
                 }
                 .trp-apply {
                     width: 100%;
-                    padding: 8px;
+                    padding: 6px;
                     border: none;
-                    border-radius: 6px;
-                    background: var(--color-primary, #d4a843);
-                    color: #000;
+                    border-radius: 5px;
+                    background: var(--blue, #0165a7);
+                    color: #fff;
                     font-weight: 700;
-                    font-size: 13px;
+                    font-size: 12px;
                     cursor: pointer;
                     transition: opacity 0.2s;
                 }
