@@ -1,5 +1,5 @@
 """
-Insight System Agent v6.0.0 — Unified System Resource Monitoring
+Insight System Agent v5.0.3 — Unified System Resource Monitoring
 
 Auto-detects OS (Linux/Windows/macOS) and monitors:
 - CPU usage (total + per-core + load average on Unix)
@@ -35,9 +35,12 @@ import requests
 
 CORE_API_URL = os.getenv("INSIGHT_CORE_URL", "http://localhost:8080")
 API_KEY = os.getenv("INSIGHT_API_KEY", "insight-secret-key")
+AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")  # New token-based auth
 
 OS_TYPE = platform.system().lower()  # 'linux', 'windows', 'darwin'
 HOSTNAME = socket.gethostname()
+AGENT_VERSION = "5.0.3"
+OS_INFO = f"{platform.system()} {platform.release()}"
 
 AGENT_ID = os.getenv("AGENT_ID", f"system-agent-{HOSTNAME}")
 AGENT_NAME = os.getenv("AGENT_NAME", f"System Agent ({HOSTNAME})")
@@ -86,7 +89,11 @@ if OS_TYPE == "windows":
 
 def send_to_core(endpoint: str, data: dict) -> bool:
     url = f"{CORE_API_URL}{endpoint}"
-    headers = {"Content-Type": "application/json", "X-API-Key": API_KEY}
+    headers = {"Content-Type": "application/json"}
+    if AGENT_TOKEN:
+        headers["X-Agent-Token"] = AGENT_TOKEN
+    else:
+        headers["X-API-Key"] = API_KEY
     try:
         resp = requests.post(url, json=data, headers=headers, timeout=30)
         if resp.status_code < 300:
@@ -98,6 +105,35 @@ def send_to_core(endpoint: str, data: dict) -> bool:
     except Exception as e:
         logger.error(f"Connection to core failed: {e}")
         return False
+
+
+def connect_to_core():
+    """Register agent with core via POST /agents/connect (token-based auto-registration)."""
+    global AGENT_ID
+    if not AGENT_TOKEN:
+        logger.info("No AGENT_TOKEN set, using legacy API key auth")
+        return
+    url = f"{CORE_API_URL}/api/v1/agents/connect"
+    headers = {"Content-Type": "application/json", "X-Agent-Token": AGENT_TOKEN}
+    data = {
+        "agent_id": AGENT_ID,
+        "name": AGENT_NAME,
+        "agent_type": "system",
+        "hostname": HOSTNAME,
+        "version": AGENT_VERSION,
+        "os_info": OS_INFO,
+        "labels": {"os": OS_TYPE, "platform": platform.machine()},
+    }
+    try:
+        resp = requests.post(url, json=data, headers=headers, timeout=30)
+        if resp.status_code < 300:
+            result = resp.json()
+            AGENT_ID = result.get("agent_id", AGENT_ID)
+            logger.info(f"Connected to core: agent_id={AGENT_ID}")
+        else:
+            logger.error(f"Connect failed: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        logger.error(f"Connect to core failed: {e}")
 
 
 def send_heartbeat():
@@ -617,19 +653,23 @@ def check_daily_schedule():
 def main():
     os_display = {"linux": "Linux", "windows": "Windows", "darwin": "macOS"}.get(OS_TYPE, OS_TYPE)
 
-    logger.info(f"═══ Insight System Agent v6.0.0 ═══")
+    logger.info(f"=== Insight System Agent v{AGENT_VERSION} ===")
     logger.info(f"  Agent ID:      {AGENT_ID}")
     logger.info(f"  Agent Name:    {AGENT_NAME}")
     logger.info(f"  Hostname:      {HOSTNAME}")
     logger.info(f"  OS:            {os_display} ({platform.release()})")
     logger.info(f"  Core URL:      {CORE_API_URL}")
+    logger.info(f"  Auth:          {'Token' if AGENT_TOKEN else 'API Key (legacy)'}")
     logger.info(f"  Scan Interval: {SCAN_INTERVAL}s")
-    logger.info(f"  Thresholds:    CPU={CPU_THRESHOLD}%, RAM={MEMORY_THRESHOLD}%, Disk={DISK_THRESHOLD}%")
+    logger.info(f"  Thresholds:    CPU={CPU_THRESHOLD}%, RAM={MEMORY_THRESHOLD}%, Disk={DISK_THRESHOLD}%"))
     if OS_TYPE == "linux":
         logger.info(f"  Log files:     {LOG_FILES}")
         logger.info(f"  Journald:      {USE_JOURNALD}")
     elif OS_TYPE == "windows":
         logger.info(f"  WMI:           {'available' if wmi_available else 'not available (using PowerShell)'}")
+
+    # Connect to core (token-based registration)
+    connect_to_core()
 
     daily_done_today = False
     last_scan_day = None

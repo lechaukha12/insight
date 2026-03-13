@@ -1,5 +1,5 @@
 """
-Insight Collector v5.0.2
+Insight Collector v5.0.3
 
 Receives OTLP data (traces + metrics + logs) via HTTP (protobuf or JSON)
 and forwards to Insight Core API.
@@ -45,8 +45,10 @@ except ImportError:
 
 CORE_API_URL = os.getenv("INSIGHT_CORE_URL", "http://localhost:8080")
 API_KEY = os.getenv("INSIGHT_API_KEY", "insight-secret-key")
+AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")  # New token-based auth
 AGENT_ID = os.getenv("AGENT_ID", f"collector-{socket.gethostname()}")
 AGENT_NAME = os.getenv("AGENT_NAME", f"Insight Collector ({socket.gethostname()})")
+AGENT_VERSION = "5.0.3"
 LISTEN_PORT = int(os.getenv("OTEL_PORT", "4318"))
 HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "30"))
 
@@ -59,7 +61,7 @@ logger = logging.getLogger("insight.otel-agent")
 
 # ─── FastAPI App ───
 
-app = FastAPI(title="Insight OTLP Collector", version="5.0.2")
+app = FastAPI(title="Insight OTLP Collector", version="5.0.3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Stats
@@ -70,7 +72,11 @@ stats = {"traces_received": 0, "metrics_received": 0, "logs_received": 0, "spans
 
 def send_to_core(endpoint: str, data: dict) -> bool:
     url = f"{CORE_API_URL}{endpoint}"
-    headers = {"Content-Type": "application/json", "X-API-Key": API_KEY}
+    headers = {"Content-Type": "application/json"}
+    if AGENT_TOKEN:
+        headers["X-Agent-Token"] = AGENT_TOKEN
+    else:
+        headers["X-API-Key"] = API_KEY
     try:
         resp = requests.post(url, json=data, headers=headers, timeout=30)
         if resp.status_code < 300:
@@ -388,14 +394,49 @@ def _heartbeat_loop():
         time.sleep(HEARTBEAT_INTERVAL)
 
 
+def connect_to_core():
+    """Register agent with core via POST /agents/connect (token-based auto-registration)."""
+    global AGENT_ID
+    if not AGENT_TOKEN:
+        logger.info("No AGENT_TOKEN set, using legacy API key auth")
+        return
+    import platform
+    url = f"{CORE_API_URL}/api/v1/agents/connect"
+    headers = {"Content-Type": "application/json", "X-Agent-Token": AGENT_TOKEN}
+    data = {
+        "agent_id": AGENT_ID,
+        "name": AGENT_NAME,
+        "agent_type": "collector",
+        "agent_category": "application",
+        "hostname": socket.gethostname(),
+        "version": AGENT_VERSION,
+        "os_info": f"{platform.system()} {platform.release()}",
+        "labels": {"type": "otel-collector"},
+    }
+    try:
+        resp = requests.post(url, json=data, headers=headers, timeout=30)
+        if resp.status_code < 300:
+            result = resp.json()
+            AGENT_ID = result.get("agent_id", AGENT_ID)
+            logger.info(f"Connected to core: agent_id={AGENT_ID}")
+        else:
+            logger.error(f"Connect failed: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        logger.error(f"Connect to core failed: {e}")
+
+
 # ─── Startup ───
 
 @app.on_event("startup")
 async def startup():
-    logger.info(f"Insight Collector v5.0.2 starting...")
+    logger.info(f"Insight Collector v{AGENT_VERSION} starting...")
     logger.info(f"   Agent ID: {AGENT_ID}")
     logger.info(f"   Core URL: {CORE_API_URL}")
+    logger.info(f"   Auth: {'Token' if AGENT_TOKEN else 'API Key (legacy)'}")
     logger.info(f"   OTLP HTTP Port: {LISTEN_PORT}")
+
+    # Connect to core (token-based registration)
+    connect_to_core()
 
     # Start heartbeat thread
     t = Thread(target=_heartbeat_loop, daemon=True)

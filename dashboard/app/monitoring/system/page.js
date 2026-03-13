@@ -142,6 +142,10 @@ export default function SystemMonitoringPage() {
                                         <div>
                                             <div className="card-title">{agent.name || agent.hostname}</div>
                                             <div className="card-subtitle">{agent.hostname} · {agent.cluster_id || 'default'}</div>
+                                            <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                                                {agent.agent_version && <span className="badge info" style={{ fontSize: 10 }}>v{agent.agent_version}</span>}
+                                                {agent.os_info && <span className="badge" style={{ fontSize: 10, background: 'rgba(100,116,139,0.1)', color: '#64748b' }}>{agent.os_info}</span>}
+                                            </div>
                                         </div>
                                         <span className={`badge ${status === 'online' ? 'active' : 'inactive'}`}>
                                             <span className="badge-dot" />{status}

@@ -22,8 +22,10 @@ import requests
 
 CORE_API_URL = os.getenv("INSIGHT_CORE_URL", "http://localhost:8080")
 API_KEY = os.getenv("INSIGHT_API_KEY", "insight-secret-key")
+AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")  # New token-based auth
 AGENT_ID = os.getenv("AGENT_ID", "k8s-agent-default")
 AGENT_NAME = os.getenv("AGENT_NAME", "K8s Agent")
+AGENT_VERSION = "5.0.3"
 CLUSTER_NAME = os.getenv("CLUSTER_NAME", "default")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "30"))  # seconds
 DAILY_SCAN_HOUR = int(os.getenv("DAILY_SCAN_HOUR", "0"))  # UTC hour (7:45 AM UTC+7 = 0:45 UTC)
@@ -65,10 +67,11 @@ except Exception as e:
 def send_to_core(endpoint: str, data: dict) -> bool:
     """Send data to Insight Core API."""
     url = f"{CORE_API_URL}{endpoint}"
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-Key": API_KEY,
-    }
+    headers = {"Content-Type": "application/json"}
+    if AGENT_TOKEN:
+        headers["X-Agent-Token"] = AGENT_TOKEN
+    else:
+        headers["X-API-Key"] = API_KEY
     try:
         resp = requests.post(url, json=data, headers=headers, timeout=30)
         if resp.status_code < 300:
@@ -80,6 +83,37 @@ def send_to_core(endpoint: str, data: dict) -> bool:
     except Exception as e:
         logger.error(f"Connection to core failed: {e}")
         return False
+
+
+def connect_to_core():
+    """Register agent with core via POST /agents/connect (token-based auto-registration)."""
+    global AGENT_ID
+    if not AGENT_TOKEN:
+        logger.info("No AGENT_TOKEN set, using legacy API key auth")
+        return
+    import platform
+    url = f"{CORE_API_URL}/api/v1/agents/connect"
+    headers = {"Content-Type": "application/json", "X-Agent-Token": AGENT_TOKEN}
+    data = {
+        "agent_id": AGENT_ID,
+        "name": AGENT_NAME,
+        "agent_type": "kubernetes",
+        "hostname": os.getenv("HOSTNAME", "k8s-node"),
+        "version": AGENT_VERSION,
+        "os_info": f"{platform.system()} {platform.release()}",
+        "cluster_id": CLUSTER_NAME,
+        "labels": {"cluster": CLUSTER_NAME},
+    }
+    try:
+        resp = requests.post(url, json=data, headers=headers, timeout=30)
+        if resp.status_code < 300:
+            result = resp.json()
+            AGENT_ID = result.get("agent_id", AGENT_ID)
+            logger.info(f"Connected to core: agent_id={AGENT_ID}")
+        else:
+            logger.error(f"Connect failed: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        logger.error(f"Connect to core failed: {e}")
 
 
 def send_heartbeat():
@@ -506,12 +540,16 @@ def check_daily_schedule():
 
 def main():
     """Main agent loop."""
-    logger.info(f"Insight K8s Agent starting...")
+    logger.info(f"Insight K8s Agent v{AGENT_VERSION} starting...")
     logger.info(f"   Agent ID: {AGENT_ID}")
     logger.info(f"   Cluster: {CLUSTER_NAME}")
     logger.info(f"   Core URL: {CORE_API_URL}")
+    logger.info(f"   Auth: {'Token' if AGENT_TOKEN else 'API Key (legacy)'}")
     logger.info(f"   Scan Interval: {SCAN_INTERVAL}s")
     logger.info(f"   Daily Scan: {DAILY_SCAN_HOUR:02d}:{DAILY_SCAN_MINUTE:02d} UTC")
+
+    # Connect to core (token-based registration)
+    connect_to_core()
 
     daily_done_today = False
     last_scan_day = None
