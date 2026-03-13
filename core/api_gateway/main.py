@@ -91,21 +91,14 @@ if not API_KEY:
     logger.warning(f"INSIGHT_API_KEY not set, generated random key: {API_KEY}")
 
 async def require_agent_token(request: Request):
-    """Validate agent auth: supports X-Agent-Token (new) or X-API-Key (legacy)."""
-    # Try new token-based auth first
+    """Validate agent auth: requires X-Agent-Token header (token-based auth only)."""
     agent_token = request.headers.get("X-Agent-Token", "")
-    if agent_token:
-        token_record = verify_agent_token(agent_token)
-        if not token_record:
-            raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
-        request.state.token_record = token_record
-        return
-    # Fallback to legacy API key
-    key = request.headers.get("X-API-Key", "")
-    if key == API_KEY:
-        request.state.token_record = None
-        return
-    raise HTTPException(status_code=401, detail="Invalid or missing agent token/API key")
+    if not agent_token:
+        raise HTTPException(status_code=401, detail="X-Agent-Token header required")
+    token_record = verify_agent_token(agent_token)
+    if not token_record:
+        raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
+    request.state.token_record = token_record
 
 # Keep backward compat alias
 require_api_key = require_agent_token

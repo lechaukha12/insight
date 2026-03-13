@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: api-gateway
-          image: lechaukha12/insight-api:v5.1.0
+          image: lechaukha12/insight-api:v5.0.3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -90,7 +90,7 @@ spec:
     spec:
       containers:
         - name: dashboard
-          image: lechaukha12/insight-dashboard:v5.1.0
+          image: lechaukha12/insight-dashboard:v5.0.3
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
@@ -141,11 +141,13 @@ spec:
       serviceAccountName: insight-k8s-agent
       containers:
         - name: k8s-agent
-          image: lechaukha12/insight-k8s-agent:v5.1.0
+          image: lechaukha12/insight-k8s-agent:v5.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: INSIGHT_CORE_URL
               value: "http://insight-api:8080"
+            - name: AGENT_TOKEN
+              value: "ist_XQFzVSJz9rXhWlid2EERkGZiBzjKL4F6KCuxBHwE3MA"
           envFrom:
             - configMapRef:
                 name: insight-config
@@ -178,13 +180,15 @@ spec:
     spec:
       containers:
         - name: otel-agent
-          image: lechaukha12/insight-otel-agent:v5.1.0
+          image: lechaukha12/insight-otel-agent:v5.0.3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 4318
           env:
             - name: INSIGHT_CORE_URL
               value: "http://insight-api:8080"
+            - name: AGENT_TOKEN
+              value: "ist_XQFzVSJz9rXhWlid2EERkGZiBzjKL4F6KCuxBHwE3MA"
           envFrom:
             - configMapRef:
                 name: insight-config
