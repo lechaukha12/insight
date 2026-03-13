@@ -718,28 +718,30 @@ def register_agent_with_id(agent_id: str, name: str, agent_type: str, hostname: 
 
 
 def list_agents(cluster_id: str = None, from_time: str = None, to_time: str = None) -> list[dict]:
-    """List agents. If from_time is set, only return agents with heartbeat >= from_time."""
+    """List agents. Excludes agents whose token has been revoked. If from_time is set, only return agents with heartbeat >= from_time."""
     conditions = []
     params_pg = []
     params_sq = []
     idx = 1
     if cluster_id and cluster_id != 'all':
         if IS_POSTGRES:
-            conditions.append(f"cluster_id = ${idx}"); params_pg.append(cluster_id); idx += 1
+            conditions.append(f"a.cluster_id = ${idx}"); params_pg.append(cluster_id); idx += 1
         else:
-            conditions.append("cluster_id = ?"); params_sq.append(cluster_id)
+            conditions.append("a.cluster_id = ?"); params_sq.append(cluster_id)
     if from_time:
         if IS_POSTGRES:
-            conditions.append(f"last_heartbeat >= ${idx}"); params_pg.append(from_time); idx += 1
+            conditions.append(f"a.last_heartbeat >= ${idx}"); params_pg.append(from_time); idx += 1
         else:
-            conditions.append("last_heartbeat >= ?"); params_sq.append(from_time)
+            conditions.append("a.last_heartbeat >= ?"); params_sq.append(from_time)
     if to_time:
         if IS_POSTGRES:
-            conditions.append(f"last_heartbeat <= ${idx}"); params_pg.append(to_time); idx += 1
+            conditions.append(f"a.last_heartbeat <= ${idx}"); params_pg.append(to_time); idx += 1
         else:
-            conditions.append("last_heartbeat <= ?"); params_sq.append(to_time)
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-    query = f"SELECT * FROM agents{where} ORDER BY created_at DESC"
+            conditions.append("a.last_heartbeat <= ?"); params_sq.append(to_time)
+    # Exclude agents whose token has been revoked
+    conditions.append("(t.is_active = 1 OR a.token_id = '' OR t.id IS NULL)")
+    where = " WHERE " + " AND ".join(conditions)
+    query = f"SELECT a.* FROM agents a LEFT JOIN agent_tokens t ON a.token_id = t.id{where} ORDER BY a.created_at DESC"
     if IS_POSTGRES:
         rows = db_execute("", query, params_pg=params_pg, fetch=True) or []
     else:
@@ -822,10 +824,18 @@ def verify_agent_token(token: str) -> dict | None:
 
 
 def revoke_agent_token(token_id: str) -> bool:
-    """Revoke (deactivate) an agent token."""
+    """Revoke (deactivate) an agent token and remove linked agents."""
+    # Deactivate the token
     db_execute(
         "UPDATE agent_tokens SET is_active = 0 WHERE id = ?",
         "UPDATE agent_tokens SET is_active = 0 WHERE id = $1",
+        params_sqlite=[token_id],
+        params_pg=[token_id]
+    )
+    # Delete all agents linked to this token so they disappear from dashboard
+    db_execute(
+        "DELETE FROM agents WHERE token_id = ?",
+        "DELETE FROM agents WHERE token_id = $1",
         params_sqlite=[token_id],
         params_pg=[token_id]
     )
