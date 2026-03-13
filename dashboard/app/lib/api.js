@@ -73,6 +73,10 @@ export async function getAgent(agentId) {
     return fetchAPI(`/api/v1/agents/${agentId}`);
 }
 
+export async function deleteAgent(agentId) {
+    return fetchAPI(`/api/v1/agents/${agentId}`, { method: 'DELETE' });
+}
+
 export async function registerAgent(data) {
     return fetchAPI('/api/v1/agents/register', { method: 'POST', body: JSON.stringify(data) });
 }

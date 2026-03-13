@@ -284,6 +284,17 @@ async def agent_heartbeat(agent_id: str):
     update_agent_heartbeat(agent_id)
     return {"status": "ok"}
 
+@app.delete("/api/v1/agents/{agent_id}")
+async def delete_agent_endpoint(agent_id: str, user: dict = Depends(require_role(["admin"]))):
+    """Delete an agent by ID (admin only)."""
+    from shared.database.db import IS_POSTGRES, _run_pg, _run_sqlite
+    if IS_POSTGRES:
+        _run_pg("DELETE FROM agents WHERE id = $1", [agent_id])
+    else:
+        _run_sqlite("DELETE FROM agents WHERE id = ?", [agent_id])
+    insert_audit_log(user["id"], user["username"], "delete_agent", "agent", {"agent_id": agent_id})
+    return {"status": "deleted", "agent_id": agent_id}
+
 # ════════════════════════════════════════════════
 # AGENT TOKEN MANAGEMENT
 # ════════════════════════════════════════════════
