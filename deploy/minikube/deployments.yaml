@@ -1,3 +1,45 @@
+# ─── API Gateway ServiceAccount + RBAC ───
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: insight-api-sa
+  namespace: insight-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: insight-api-k8s-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "pods", "services", "configmaps", "secrets",
+                "persistentvolumes", "persistentvolumeclaims", "events", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: insight-api-k8s-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: insight-api-sa
+    namespace: insight-system
+roleRef:
+  kind: ClusterRole
+  name: insight-api-k8s-reader
+  apiGroup: rbac.authorization.k8s.io
+---
 # ─── API Gateway Deployment ───
 apiVersion: apps/v1
 kind: Deployment
@@ -16,6 +58,7 @@ spec:
       labels:
         app: insight-api
     spec:
+      serviceAccountName: insight-api-sa
       containers:
         - name: api-gateway
           image: lechaukha12/insight-api:v5.0.4

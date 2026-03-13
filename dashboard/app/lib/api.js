@@ -235,3 +235,20 @@ export async function revokeAgentToken(tokenId) {
 export async function getTokenAgents(tokenId) {
     return fetchAPI(`/api/v1/agent-tokens/${tokenId}/agents`);
 }
+
+// ─── K8s Resources (v5.0.4) ───
+
+export async function getK8sNodes() { return fetchAPI('/api/v1/k8s/nodes'); }
+export async function getK8sNamespaces() { return fetchAPI('/api/v1/k8s/namespaces'); }
+export async function getK8sPods(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/pods`); }
+export async function getK8sDeployments(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/deployments`); }
+export async function getK8sStatefulSets(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/statefulsets`); }
+export async function getK8sDaemonSets(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/daemonsets`); }
+export async function getK8sServices(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/services`); }
+export async function getK8sConfigMaps(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/configmaps`); }
+export async function getK8sSecrets(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/secrets`); }
+export async function getK8sEvents(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/events`); }
+export async function getK8sPVs() { return fetchAPI('/api/v1/k8s/pvs'); }
+export async function getK8sPVCs() { return fetchAPI('/api/v1/k8s/pvcs'); }
+export async function getK8sStorageClasses() { return fetchAPI('/api/v1/k8s/storageclasses'); }
+export async function getK8sIngresses(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/ingresses`); }

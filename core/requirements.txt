@@ -10,3 +10,4 @@ bcrypt==4.2.0
 nats-py==2.9.0
 websockets==13.0
 clickhouse-connect==0.8.9
+kubernetes==31.0.0

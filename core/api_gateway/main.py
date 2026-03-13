@@ -772,6 +772,89 @@ async def storage_purge(user=Depends(get_current_user)):
                      action="purge_all_data", resource="storage", details=result)
     return result
 
+# ════════════════════════════════════════════════
+# K8S RESOURCE BROWSING (Real-time K8s API)
+# ════════════════════════════════════════════════
+
+@app.get("/api/v1/k8s/nodes", dependencies=[Depends(require_auth)])
+async def k8s_nodes():
+    from api_gateway.k8s_resources import get_k8s_nodes
+    return {"nodes": get_k8s_nodes()}
+
+@app.get("/api/v1/k8s/namespaces", dependencies=[Depends(require_auth)])
+async def k8s_namespaces():
+    from api_gateway.k8s_resources import get_k8s_namespaces
+    return {"namespaces": get_k8s_namespaces()}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/pods", dependencies=[Depends(require_auth)])
+async def k8s_pods(ns: str):
+    from api_gateway.k8s_resources import get_k8s_pods
+    ns_param = None if ns == "_all" else ns
+    return {"pods": get_k8s_pods(ns_param)}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/deployments", dependencies=[Depends(require_auth)])
+async def k8s_deployments(ns: str):
+    from api_gateway.k8s_resources import get_k8s_deployments
+    ns_param = None if ns == "_all" else ns
+    return {"deployments": get_k8s_deployments(ns_param)}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/statefulsets", dependencies=[Depends(require_auth)])
+async def k8s_statefulsets(ns: str):
+    from api_gateway.k8s_resources import get_k8s_statefulsets
+    ns_param = None if ns == "_all" else ns
+    return {"statefulsets": get_k8s_statefulsets(ns_param)}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/daemonsets", dependencies=[Depends(require_auth)])
+async def k8s_daemonsets(ns: str):
+    from api_gateway.k8s_resources import get_k8s_daemonsets
+    ns_param = None if ns == "_all" else ns
+    return {"daemonsets": get_k8s_daemonsets(ns_param)}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/services", dependencies=[Depends(require_auth)])
+async def k8s_services(ns: str):
+    from api_gateway.k8s_resources import get_k8s_services
+    ns_param = None if ns == "_all" else ns
+    return {"services": get_k8s_services(ns_param)}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/configmaps", dependencies=[Depends(require_auth)])
+async def k8s_configmaps(ns: str):
+    from api_gateway.k8s_resources import get_k8s_configmaps
+    ns_param = None if ns == "_all" else ns
+    return {"configmaps": get_k8s_configmaps(ns_param)}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/secrets", dependencies=[Depends(require_auth)])
+async def k8s_secrets(ns: str):
+    from api_gateway.k8s_resources import get_k8s_secrets
+    ns_param = None if ns == "_all" else ns
+    return {"secrets": get_k8s_secrets(ns_param)}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/events", dependencies=[Depends(require_auth)])
+async def k8s_events(ns: str):
+    from api_gateway.k8s_resources import get_k8s_events
+    ns_param = None if ns == "_all" else ns
+    return {"events": get_k8s_events(ns_param)}
+
+@app.get("/api/v1/k8s/pvs", dependencies=[Depends(require_auth)])
+async def k8s_pvs():
+    from api_gateway.k8s_resources import get_k8s_pvs
+    return {"pvs": get_k8s_pvs()}
+
+@app.get("/api/v1/k8s/pvcs", dependencies=[Depends(require_auth)])
+async def k8s_pvcs():
+    from api_gateway.k8s_resources import get_k8s_pvcs
+    return {"pvcs": get_k8s_pvcs()}
+
+@app.get("/api/v1/k8s/storageclasses", dependencies=[Depends(require_auth)])
+async def k8s_storageclasses():
+    from api_gateway.k8s_resources import get_k8s_storageclasses
+    return {"storageclasses": get_k8s_storageclasses()}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/ingresses", dependencies=[Depends(require_auth)])
+async def k8s_ingresses(ns: str):
+    from api_gateway.k8s_resources import get_k8s_ingresses
+    ns_param = None if ns == "_all" else ns
+    return {"ingresses": get_k8s_ingresses(ns_param)}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))

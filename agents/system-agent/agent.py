@@ -696,4 +696,19 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ("--help", "-h"):
+            print(f"Insight System Agent v{AGENT_VERSION}")
+            print(f"Usage: {sys.argv[0]} [--help] [--version]")
+            print()
+            print("Environment variables:")
+            print("  INSIGHT_CORE_URL   API server URL (default: http://localhost:8080)")
+            print("  AGENT_TOKEN        Agent authentication token")
+            print("  AGENT_ID           Agent identifier (default: system-agent-<hostname>)")
+            print("  AGENT_NAME         Display name (default: System Agent (<hostname>))")
+            print("  SCAN_INTERVAL      Monitoring interval in seconds (default: 30)")
+            sys.exit(0)
+        elif sys.argv[1] in ("--version", "-v"):
+            print(f"insight-agent {AGENT_VERSION}")
+            sys.exit(0)
     main()
