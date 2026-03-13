@@ -382,30 +382,6 @@ spec:
           env:
             - name: CLICKHOUSE_URL
               value: "http://clickhouse:8123"
-          startupProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 10
-            failureThreshold: 18
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 0
-            periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 5
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 0
-            periodSeconds: 10
-            timeoutSeconds: 10
-            failureThreshold: 5
           resources:
             requests:
               cpu: 200m
