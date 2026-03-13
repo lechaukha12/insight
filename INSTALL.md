@@ -51,10 +51,10 @@ kubectl exec -n insight-system clickhouse-0 -- \
 
 ```bash
 # Build Docker image
-docker build -t lechaukha12/insight-api:v5.0.0 ./core/
-docker push lechaukha12/insight-api:v5.0.0
+docker build -t lechaukha12/insight-api:v5.0.6 ./core/
+docker push lechaukha12/insight-api:v5.0.6
 
-# Deploy (includes CLICKHOUSE_URL env)
+# Deploy (includes CLICKHOUSE_URL env + RBAC for K8s API access)
 kubectl apply -f deploy/minikube/deployments.yaml
 kubectl rollout status deploy/insight-api -n insight-system --timeout=120s
 
@@ -66,8 +66,8 @@ kubectl logs deploy/insight-api -n insight-system --tail=5
 ### Step 5: Build & Deploy Dashboard
 
 ```bash
-docker build -t lechaukha12/insight-dashboard:v5.0.0 ./dashboard/
-docker push lechaukha12/insight-dashboard:v5.0.0
+docker build -t lechaukha12/insight-dashboard:v5.0.5 ./dashboard/
+docker push lechaukha12/insight-dashboard:v5.0.5
 kubectl rollout status deploy/insight-dashboard -n insight-system --timeout=120s
 ```
 
@@ -78,9 +78,17 @@ Already included in `deployments.yaml`.
 
 #### System Agent (optional, for non-K8s servers)
 ```bash
-docker build -t lechaukha12/insight-system-agent:v5.0.0 ./agents/system-agent/
-docker push lechaukha12/insight-system-agent:v5.0.0
+docker build -t lechaukha12/insight-system-agent:v5.0.3 ./agents/system-agent/
+docker push lechaukha12/insight-system-agent:v5.0.3
 # Deploy on target machines
+```
+
+#### macOS Agent (Homebrew)
+```bash
+brew install --formula ./homebrew/insight-agent.rb
+export INSIGHT_CORE_URL="http://your-api:8080"
+export AGENT_TOKEN="your-agent-token"
+insight-agent
 ```
 
 #### OTel Agent (for application monitoring)
@@ -168,7 +176,8 @@ INSIGHT_CORE_URL=http://localhost:8080 python agent.py
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
 | `INSIGHT_CORE_URL` | `http://localhost:8080` | Yes | Core API URL |
-| `INSIGHT_API_KEY` | `insight-secret-key` | Yes | Must match Core API |
+| `AGENT_TOKEN` | *(empty)* | Recommended | Agent token from dashboard |
+| `INSIGHT_API_KEY` | `insight-secret-key` | Fallback | Legacy API key auth |
 | `AGENT_NAME` | *(hostname)* | No | Display name |
 | `CLUSTER_ID` | `default` | No | Cluster assignment |
 | `SCAN_INTERVAL` | `30` | No | Scan interval (seconds) |
@@ -295,6 +304,9 @@ kubectl exec -n insight-system deploy/insight-api -- \
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v5.0.6 | 2026-03-13 | K8s Dashboard (12 resource tabs, cluster detail, node popup), StorageClass/Ingress, Homebrew formula |
+| v5.0.4 | 2026-03-13 | Agent token management, time range picker, compact UI |
+| v5.0.3 | 2026-03-12 | macOS system agent, agent category filter, detail tabs |
 | v5.0.0 | 2026-03-12 | ClickHouse migration, Multi-service demo, OTel, Data retention, Purge |
 | v3.0.0 | - | Recharts dashboard with live metrics charts |
 | v2.0.0 | - | UI redesign with custom branding |

@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Hệ thống giám sát tập trung cho Infrastructure, Kubernetes & Application Performance</strong><br/>
-  <em>v5.0.0 — ClickHouse · Multi-Service Demo · OTel · RBAC</em>
+  <em>v5.0.6 — Kubernetes Dashboard · StorageClass · Ingress · Homebrew · Agent Token Auth</em>
 </p>
 
 ---
@@ -10,8 +10,8 @@
 ## 📋 Tổng quan
 
 Insight là nền tảng monitoring toàn diện dựa trên microservice, triển khai trên Kubernetes (Minikube), hỗ trợ giám sát:
-- **Kubernetes clusters** — Pod status, node resources, error logs, CrashLoopBackOff detection
-- **System servers** — CPU, RAM, Disk, Network, Load average (Linux & Windows)
+- **Kubernetes clusters** — Full cluster dashboard với 12 resource types (Pods, Deployments, StatefulSets, DaemonSets, Services, Ingresses, ConfigMaps, Secrets, PVCs, PVs, StorageClasses, Events)
+- **System servers** — CPU, RAM, Disk, Network, Load average (Linux, macOS & Windows)
 - **Application Performance** — Distributed tracing, logs, metrics qua OpenTelemetry
 - **Multi-service architecture** — Theo dõi request flow giữa nhiều services
 
@@ -69,8 +69,9 @@ Insight là nền tảng monitoring toàn diện dựa trên microservice, tri�
 | Feature | Mô tả |
 |---------|--------|
 | Real-time monitoring | Agent scan mỗi 30s, phát hiện lỗi tức thì |
-| Kubernetes monitoring | Pod status, node resources, CrashLoopBackOff, OOMKilled |
-| System monitoring | CPU, RAM, Disk, Network, Process list |
+| Kubernetes Dashboard | Full cluster dashboard — 12 resource tabs, node metrics popup (Lens-style), namespace filter |
+| Kubernetes Resources | Pods, Deployments, StatefulSets, DaemonSets, Services, Ingresses, ConfigMaps, Secrets, PVCs, PVs, StorageClasses, Events |
+| System monitoring | CPU, RAM, Disk, Network, Process list (Linux, macOS, Windows) |
 | Application monitoring | Distributed traces, request latency, error rates (OTel) |
 | Multi-service tracing | Waterfall view, service dependency map |
 
@@ -87,7 +88,10 @@ Insight là nền tảng monitoring toàn diện dựa trên microservice, tri�
 | Feature | Mô tả |
 |---------|--------|
 | Dashboard | Overview với live metrics charts (Recharts) |
-| Agent management | Register, filter by category, detail tabs |
+| K8s Agent Grid | Agent list dạng Grid/List với quick stats (Nodes, Pods, NS, Warnings) |
+| K8s Cluster Detail | Cluster overview, resource browser, node popup |
+| Agent management | Register, filter by category, detail tabs, token-based auth |
+| Agent Tokens | Generate / revoke agent tokens cho secure registration |
 | Events & Alerts | Severity tracking, acknowledge, filter |
 | Error Logs | Centralized log viewer |
 | Settings | General, Webhooks, Data Retention tabs |
@@ -171,8 +175,9 @@ kubectl apply -f demo-gateway/k8s-deploy.yaml
 insight/
 ├── core/                         # Backend (Python FastAPI)
 │   ├── api_gateway/              # REST API Gateway + Auth
-│   │   ├── main.py               # 40+ API endpoints
-│   │   └── auth.py               # JWT auth, RBAC
+│   │   ├── main.py               # 50+ API endpoints
+│   │   ├── auth.py               # JWT auth, RBAC
+│   │   └── k8s_resources.py      # Direct K8s API queries (14 resource types)
 │   ├── alert_service/            # Telegram, Email, Webhook alerts
 │   ├── report_service/           # Report generation
 │   └── shared/
@@ -182,8 +187,13 @@ insight/
 ├── dashboard/                    # Next.js 15 Admin Dashboard
 │   └── app/
 │       ├── components/           # AuthProvider, Sidebar, ClientLayout
-│       ├── lib/                  # API client, utils
+│       ├── lib/                  # API client, utils, TimeRangeContext
 │       ├── agents/               # Agent list & detail pages
+│       ├── monitoring/
+│       │   ├── kubernetes/       # K8s agent grid page
+│       │   │   └── [agentId]/    # Cluster detail — 12 resource tabs
+│       │   ├── application/      # Application monitoring (OTel)
+│       │   └── system/           # System monitoring
 │       ├── events/               # Events & Alerts page
 │       ├── logs/                 # Error Logs viewer
 │       ├── settings/             # General, Webhooks, Data Retention
@@ -196,8 +206,11 @@ insight/
 │
 ├── agents/
 │   ├── k8s-agent/                # Kubernetes cluster monitoring
-│   ├── system-agent/             # Linux/Windows system monitoring
+│   ├── system-agent/             # Linux/macOS/Windows system monitoring
 │   └── otel-agent/               # OpenTelemetry collector → Insight
+│
+├── homebrew/
+│   └── insight-agent.rb          # Homebrew formula for macOS agent
 │
 ├── clickhouse/
 │   ├── init-schema.sql           # ClickHouse schema (6 tables)
@@ -217,12 +230,13 @@ insight/
 │   ├── minikube/                 # K8s manifests
 │   │   ├── namespace.yaml
 │   │   ├── configmap.yaml
-│   │   ├── deployments.yaml      # All deployments + services
+│   │   ├── deployments.yaml      # All deployments + services + RBAC
 │   │   ├── rbac.yaml
 │   │   └── pvc.yaml
 │   ├── deploy-minikube.sh        # Automated deployment script
 │   └── docker-compose.yaml       # Local development
 │
+├── MANIFEST.md                   # Current image versions
 ├── INSTALL.md                    # Detailed installation guide
 └── README.md                     # This file
 ```
@@ -305,6 +319,31 @@ insight/
 | `POST` | `/api/v1/retention/apply` | ✅ | Apply retention TTL policies |
 | `POST` | `/api/v1/storage/purge` | Admin | Purge all time-series data |
 
+### Kubernetes Resources (Direct K8s API)
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| `GET` | `/api/v1/k8s/nodes` | ✅ | List cluster nodes with CPU/RAM metrics |
+| `GET` | `/api/v1/k8s/namespaces` | ✅ | List namespaces |
+| `GET` | `/api/v1/k8s/namespaces/{ns}/pods` | ✅ | List pods (ns=`_all` for all) |
+| `GET` | `/api/v1/k8s/namespaces/{ns}/deployments` | ✅ | List deployments |
+| `GET` | `/api/v1/k8s/namespaces/{ns}/statefulsets` | ✅ | List statefulsets |
+| `GET` | `/api/v1/k8s/namespaces/{ns}/daemonsets` | ✅ | List daemonsets |
+| `GET` | `/api/v1/k8s/namespaces/{ns}/services` | ✅ | List services |
+| `GET` | `/api/v1/k8s/namespaces/{ns}/ingresses` | ✅ | List ingresses |
+| `GET` | `/api/v1/k8s/namespaces/{ns}/configmaps` | ✅ | List configmaps |
+| `GET` | `/api/v1/k8s/namespaces/{ns}/secrets` | ✅ | List secrets |
+| `GET` | `/api/v1/k8s/namespaces/{ns}/events` | ✅ | List events |
+| `GET` | `/api/v1/k8s/pvs` | ✅ | List persistent volumes |
+| `GET` | `/api/v1/k8s/pvcs` | ✅ | List persistent volume claims |
+| `GET` | `/api/v1/k8s/storageclasses` | ✅ | List storage classes |
+
+### Agent Tokens
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| `GET` | `/api/v1/agent-tokens` | Admin | List agent tokens |
+| `POST` | `/api/v1/agent-tokens` | Admin | Generate new token |
+| `DELETE` | `/api/v1/agent-tokens/{id}` | Admin | Revoke token |
+
 ### Other
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
@@ -334,7 +373,8 @@ insight/
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `INSIGHT_CORE_URL` | `http://localhost:8080` | Core API URL |
-| `INSIGHT_API_KEY` | `insight-secret-key` | API key |
+| `AGENT_TOKEN` | *(empty)* | Agent token (recommended, get from dashboard) |
+| `INSIGHT_API_KEY` | `insight-secret-key` | API key (legacy fallback) |
 | `AGENT_NAME` | *(hostname)* | Agent display name |
 | `CLUSTER_ID` | `default` | Cluster assignment |
 | `SCAN_INTERVAL` | `30` | Scan interval (seconds) |
@@ -371,10 +411,28 @@ Cấu hình trong Dashboard → Settings → 🗄️ Data Retention:
 
 | Version | Highlights |
 |---------|-----------|
+| **v5.0.6** | K8s Dashboard redesign (12 resource tabs, cluster detail, node popup), StorageClass/Ingress support, Homebrew formula, Agent Token auth |
+| **v5.0.4** | Agent token management, time range picker in header, compact UI |
+| **v5.0.3** | macOS system agent, agent category filter, improved detail tabs |
 | **v5.0.0** | ClickHouse migration, Multi-service demo, OTel enhancement, Data retention UI, Purge feature |
 | **v3.0.0** | Recharts dashboard with live metrics charts |
-| **v2.0.0** | UI redesign with Nam A Bank branding |
+| **v2.0.0** | UI redesign with custom branding |
 | **v1.0.0** | MVP — K8s monitoring, alerts, dashboard |
+
+## 🍺 macOS Agent (Homebrew)
+
+```bash
+# Install directly from formula
+brew install --formula ./homebrew/insight-agent.rb
+
+# Configure and run
+export INSIGHT_CORE_URL="http://your-api-server:8080"
+export AGENT_TOKEN="your-agent-token"
+insight-agent
+
+# Or run as background service
+brew services start insight-agent
+```
 
 ## 📜 License
 
