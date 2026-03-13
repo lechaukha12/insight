@@ -371,7 +371,13 @@ export default function SettingsPage() {
                                                         <button className="btn btn-sm btn-secondary" style={{ color: 'var(--color-error)' }}
                                                             onClick={async () => {
                                                                 if (!confirm(`Revoke token "${t.name}"? Agents using this token will be disconnected.`)) return;
-                                                                await revokeAgentToken(t.id); fetchTokens();
+                                                                try {
+                                                                    await revokeAgentToken(t.id);
+                                                                    fetchTokens();
+                                                                } catch (err) {
+                                                                    alert('Failed to revoke token: ' + err.message);
+                                                                    fetchTokens();
+                                                                }
                                                             }}>Revoke</button>
                                                     ) : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Revoked</span>}
                                                 </td>

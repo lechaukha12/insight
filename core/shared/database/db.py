@@ -823,10 +823,12 @@ def verify_agent_token(token: str) -> dict | None:
 
 def revoke_agent_token(token_id: str) -> bool:
     """Revoke (deactivate) an agent token."""
-    if IS_POSTGRES:
-        _run_pg("UPDATE agent_tokens SET is_active = 0 WHERE id = $1", [token_id])
-    else:
-        _run_sqlite("UPDATE agent_tokens SET is_active = 0 WHERE id = ?", [token_id])
+    db_execute(
+        "UPDATE agent_tokens SET is_active = 0 WHERE id = ?",
+        "UPDATE agent_tokens SET is_active = 0 WHERE id = $1",
+        params_sqlite=[token_id],
+        params_pg=[token_id]
+    )
     return True
 
 

@@ -175,8 +175,8 @@ export default function TimeRangePicker() {
                     border: 1px solid var(--border-color, rgba(201, 177, 0, 0.3));
                     border-radius: 8px;
                     padding: 12px;
-                    z-index: 100;
-                    box-shadow: 0 6px 24px rgba(0,0,0,0.12);
+                    z-index: 1000;
+                    box-shadow: 0 6px 24px rgba(0,0,0,0.15);
                     min-width: 260px;
                     backdrop-filter: blur(8px);
                 }
