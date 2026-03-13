@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getAgents, getClusters, getProcesses } from '../../lib/api';
+import { useTimeRange } from '../../lib/TimeRangeContext';
 import { timeAgo } from '../../lib/hooks';
 
 export default function SystemMonitoringPage() {
@@ -13,10 +14,11 @@ export default function SystemMonitoringPage() {
     const [selectedAgent, setSelectedAgent] = useState(null);
     const [agentProcesses, setAgentProcesses] = useState(null);
     const [processLoading, setProcessLoading] = useState(false);
+    const { queryParams, isLive } = useTimeRange();
 
     const fetchData = useCallback(async () => {
         try {
-            const [agentResult, clusterResult] = await Promise.all([getAgents(), getClusters()]);
+            const [agentResult, clusterResult] = await Promise.all([getAgents(queryParams), getClusters()]);
             const systemAgents = (agentResult?.agents || []).filter(a => {
                 const cat = a.agent_category || (a.agent_type === 'opentelemetry' || a.agent_type === 'collector' ? 'application' : a.agent_type === 'kubernetes' ? 'kubernetes' : 'system');
                 return cat === 'system';
@@ -25,13 +27,15 @@ export default function SystemMonitoringPage() {
             setClusters(clusterResult?.clusters || []);
         } catch (err) { console.error(err); }
         finally { setLoading(false); }
-    }, []);
+    }, [queryParams]);
 
     useEffect(() => {
         fetchData();
-        const interval = setInterval(fetchData, 15000);
-        return () => clearInterval(interval);
-    }, [fetchData]);
+        if (isLive) {
+            const interval = setInterval(fetchData, 15000);
+            return () => clearInterval(interval);
+        }
+    }, [fetchData, isLive]);
 
     const openAgent = async (agent) => {
         setSelectedAgent(agent);

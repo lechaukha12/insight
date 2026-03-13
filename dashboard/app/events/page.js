@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getEvents, acknowledgeEvent } from '../lib/api';
+import { useTimeRange } from '../lib/TimeRangeContext';
 import { timeAgo } from '../lib/hooks';
 
 const levelIcons = { critical: 'C', error: 'E', warning: 'W', info: 'I' };
@@ -13,10 +14,11 @@ export default function EventsPage() {
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState('all');
     const [selected, setSelected] = useState(null);
+    const { queryParams, isLive } = useTimeRange();
 
     const fetchData = useCallback(async () => {
         try {
-            const params = { last_hours: 24, limit: 100 };
+            const params = { ...queryParams, limit: 100 };
             if (filter !== 'all') params.level = filter;
             const result = await getEvents(params);
             setData(result);
@@ -25,13 +27,15 @@ export default function EventsPage() {
         } finally {
             setLoading(false);
         }
-    }, [filter]);
+    }, [filter, queryParams]);
 
     useEffect(() => {
         fetchData();
-        const interval = setInterval(fetchData, 10000);
-        return () => clearInterval(interval);
-    }, [fetchData]);
+        if (isLive) {
+            const interval = setInterval(fetchData, 10000);
+            return () => clearInterval(interval);
+        }
+    }, [fetchData, isLive]);
 
     const handleAcknowledge = async (eventId) => {
         try {

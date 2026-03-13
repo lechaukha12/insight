@@ -218,6 +218,15 @@ a {
   flex-direction: column;
 }
 
+.time-picker-bar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  padding: 8px 24px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-color);
+}
+
 .main-header {
   display: flex;
   align-items: center;

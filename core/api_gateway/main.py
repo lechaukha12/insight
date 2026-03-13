@@ -262,8 +262,9 @@ async def agent_connect(request: Request):
     }
 
 @app.get("/api/v1/agents")
-async def get_all_agents(cluster_id: str = Query(None), category: str = Query(None)):
-    agents = list_agents(cluster_id=cluster_id)
+async def get_all_agents(cluster_id: str = Query(None), category: str = Query(None),
+                        from_time: str = Query(None), to_time: str = Query(None)):
+    agents = list_agents(cluster_id=cluster_id, from_time=from_time, to_time=to_time)
     # Filter by category if specified
     if category and category != 'all':
         agents = [a for a in agents if a.get('agent_category') == category]
@@ -355,8 +356,10 @@ async def receive_metrics(request: Request):
 
 @app.get("/api/v1/metrics")
 async def query_metrics(agent_id: str = Query(None), metric_name: str = Query(None),
-                        last_hours: int = Query(24), limit: int = Query(1000)):
-    data = get_metrics(agent_id=agent_id, metric_name=metric_name, last_hours=last_hours, limit=limit)
+                        last_hours: int = Query(24), limit: int = Query(1000),
+                        from_time: str = Query(None), to_time: str = Query(None)):
+    data = get_metrics(agent_id=agent_id, metric_name=metric_name, last_hours=last_hours, limit=limit,
+                       from_time=from_time, to_time=to_time)
     return {"metrics": data, "total": len(data)}
 
 # ════════════════════════════════════════════════
@@ -396,8 +399,10 @@ async def receive_events(request: Request):
 
 @app.get("/api/v1/events")
 async def query_events(agent_id: str = Query(None), level: str = Query(None),
-                       last_hours: int = Query(24), limit: int = Query(200)):
-    data = get_events(agent_id=agent_id, level=level, last_hours=last_hours, limit=limit)
+                       last_hours: int = Query(24), limit: int = Query(200),
+                       from_time: str = Query(None), to_time: str = Query(None)):
+    data = get_events(agent_id=agent_id, level=level, last_hours=last_hours, limit=limit,
+                      from_time=from_time, to_time=to_time)
     return {"events": data, "total": len(data)}
 
 @app.post("/api/v1/events/{event_id}/acknowledge")
@@ -423,19 +428,22 @@ async def receive_logs(request: Request):
     return {"status": "ok", "received": len(logs)}
 
 @app.get("/api/v1/logs")
-async def query_logs(agent_id: str = Query(None), last_hours: int = Query(24), limit: int = Query(500)):
-    return {"logs": get_logs(agent_id=agent_id, last_hours=last_hours, limit=limit)}
+async def query_logs(agent_id: str = Query(None), last_hours: int = Query(24), limit: int = Query(500),
+                     from_time: str = Query(None), to_time: str = Query(None)):
+    return {"logs": get_logs(agent_id=agent_id, last_hours=last_hours, limit=limit,
+                             from_time=from_time, to_time=to_time)}
 
 # ════════════════════════════════════════════════
 # DASHBOARD
 # ════════════════════════════════════════════════
 
 @app.get("/api/v1/dashboard/summary")
-async def dashboard_summary(cluster_id: str = Query(None)):
-    agents = list_agents(cluster_id=cluster_id)
-    event_counts = get_event_counts(last_hours=24)
+async def dashboard_summary(cluster_id: str = Query(None), from_time: str = Query(None), to_time: str = Query(None)):
+    agents = list_agents(cluster_id=cluster_id, from_time=from_time, to_time=to_time)
+    last_hours = 24  # default for event counts
+    event_counts = get_event_counts(last_hours=last_hours)
     latest_metrics = get_latest_metrics_per_agent()
-    recent_events = get_events(last_hours=24, limit=50)
+    recent_events = get_events(last_hours=last_hours, limit=50, from_time=from_time, to_time=to_time)
     clusters = list_clusters()
     return {
         "summary": {
@@ -712,8 +720,10 @@ async def receive_traces(request: Request):
     return {"status": "ok", "received": len(traces)}
 
 @app.get("/api/v1/traces", dependencies=[Depends(require_auth)])
-async def query_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100):
-    result = get_traces(agent_id=agent_id, last_hours=last_hours, limit=limit)
+async def query_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100,
+                       from_time: str = Query(None), to_time: str = Query(None)):
+    result = get_traces(agent_id=agent_id, last_hours=last_hours, limit=limit,
+                        from_time=from_time, to_time=to_time)
     return {"traces": result, "total": len(result)}
 
 @app.get("/api/v1/traces/summary")

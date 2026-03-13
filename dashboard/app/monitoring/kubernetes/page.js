@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getAgents, getClusters, getEvents } from '../../lib/api';
+import { useTimeRange } from '../../lib/TimeRangeContext';
 import { timeAgo } from '../../lib/hooks';
 
 export default function KubernetesMonitoringPage() {
@@ -10,13 +11,14 @@ export default function KubernetesMonitoringPage() {
     const [events, setEvents] = useState([]);
     const [loading, setLoading] = useState(true);
     const [selectedCluster, setSelectedCluster] = useState('');
+    const { queryParams, isLive } = useTimeRange();
 
     const fetchData = useCallback(async () => {
         try {
             const [agentResult, clusterResult, eventResult] = await Promise.all([
-                getAgents(),
+                getAgents(queryParams),
                 getClusters(),
-                getEvents({ last_hours: 24, limit: 50 }),
+                getEvents({ ...queryParams, limit: 50 }),
             ]);
             const k8sAgents = (agentResult?.agents || []).filter(a => {
                 const cat = a.agent_category || (a.agent_type === 'kubernetes' ? 'kubernetes' : null);
@@ -27,13 +29,15 @@ export default function KubernetesMonitoringPage() {
             setEvents(eventResult?.events || []);
         } catch (err) { console.error(err); }
         finally { setLoading(false); }
-    }, []);
+    }, [queryParams]);
 
     useEffect(() => {
         fetchData();
-        const interval = setInterval(fetchData, 30000);
-        return () => clearInterval(interval);
-    }, [fetchData]);
+        if (isLive) {
+            const interval = setInterval(fetchData, 30000);
+            return () => clearInterval(interval);
+        }
+    }, [fetchData, isLive]);
 
     const filteredAgents = selectedCluster ? agents.filter(a => a.cluster_id === selectedCluster) : agents;
     const filteredEvents = events.filter(e => {

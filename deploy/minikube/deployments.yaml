@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: api-gateway
-          image: lechaukha12/insight-api:v5.0.3
+          image: lechaukha12/insight-api:v5.0.4
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -90,7 +90,7 @@ spec:
     spec:
       containers:
         - name: dashboard
-          image: lechaukha12/insight-dashboard:v5.0.3
+          image: lechaukha12/insight-dashboard:v5.0.4
           imagePullPolicy: Always
           ports:
             - containerPort: 3000

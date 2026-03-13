@@ -717,19 +717,33 @@ def register_agent_with_id(agent_id: str, name: str, agent_type: str, hostname: 
     return {"id": agent_id, "name": name, "agent_type": agent_type, "agent_category": category, "status": "active"}
 
 
-def list_agents(cluster_id: str = None) -> list[dict]:
+def list_agents(cluster_id: str = None, from_time: str = None, to_time: str = None) -> list[dict]:
+    """List agents. If from_time is set, only return agents with heartbeat >= from_time."""
+    conditions = []
+    params_pg = []
+    params_sq = []
+    idx = 1
+    if cluster_id and cluster_id != 'all':
+        if IS_POSTGRES:
+            conditions.append(f"cluster_id = ${idx}"); params_pg.append(cluster_id); idx += 1
+        else:
+            conditions.append("cluster_id = ?"); params_sq.append(cluster_id)
+    if from_time:
+        if IS_POSTGRES:
+            conditions.append(f"last_heartbeat >= ${idx}"); params_pg.append(from_time); idx += 1
+        else:
+            conditions.append("last_heartbeat >= ?"); params_sq.append(from_time)
+    if to_time:
+        if IS_POSTGRES:
+            conditions.append(f"last_heartbeat <= ${idx}"); params_pg.append(to_time); idx += 1
+        else:
+            conditions.append("last_heartbeat <= ?"); params_sq.append(to_time)
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    query = f"SELECT * FROM agents{where} ORDER BY created_at DESC"
     if IS_POSTGRES:
-        if cluster_id and cluster_id != 'all':
-            rows = db_execute("", "SELECT * FROM agents WHERE cluster_id = $1 ORDER BY created_at DESC",
-                            params_pg=[cluster_id], fetch=True) or []
-        else:
-            rows = db_execute("", "SELECT * FROM agents ORDER BY created_at DESC", fetch=True) or []
+        rows = db_execute("", query, params_pg=params_pg, fetch=True) or []
     else:
-        if cluster_id and cluster_id != 'all':
-            rows = _run_sqlite("SELECT * FROM agents WHERE cluster_id = ? ORDER BY created_at DESC",
-                              [cluster_id], fetch=True) or []
-        else:
-            rows = _run_sqlite("SELECT * FROM agents ORDER BY created_at DESC", fetch=True) or []
+        rows = _run_sqlite(query, params_sq, fetch=True) or []
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))
     return rows
@@ -920,11 +934,14 @@ def insert_metrics(agent_id: str, metrics: list[dict]):
             )
 
 
-def get_metrics(agent_id: str = None, metric_name: str = None, last_hours: int = 24, limit: int = 1000) -> list[dict]:
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
+def get_metrics(agent_id: str = None, metric_name: str = None, last_hours: int = 24, limit: int = 1000, from_time: str = None, to_time: str = None) -> list[dict]:
+    cutoff = from_time or (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
         query = "SELECT * FROM metrics WHERE timestamp >= {cutoff:String}"
         params = {"cutoff": cutoff}
+        if to_time:
+            query += " AND timestamp <= {to_time:String}"
+            params["to_time"] = to_time
         if agent_id:
             query += " AND agent_id = {agent_id:String}"
             params["agent_id"] = agent_id
@@ -937,12 +954,14 @@ def get_metrics(agent_id: str = None, metric_name: str = None, last_hours: int =
     elif IS_POSTGRES:
         query = "SELECT * FROM metrics WHERE timestamp >= $1"
         params = [cutoff]; idx = 2
+        if to_time: query += f" AND timestamp <= ${idx}"; params.append(to_time); idx += 1
         if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
         if metric_name: query += f" AND metric_name = ${idx}"; params.append(metric_name); idx += 1
         query += f" ORDER BY timestamp DESC LIMIT ${idx}"; params.append(limit)
         rows = db_execute("", query, params_pg=params, fetch=True) or []
     else:
         query = "SELECT * FROM metrics WHERE timestamp >= ?"; params = [cutoff]
+        if to_time: query += " AND timestamp <= ?"; params.append(to_time)
         if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
         if metric_name: query += " AND metric_name = ?"; params.append(metric_name)
         query += " ORDER BY timestamp DESC LIMIT ?"; params.append(limit)
@@ -1086,11 +1105,14 @@ def insert_events(agent_id: str, events: list[dict]):
             )
 
 
-def get_events(agent_id: str = None, level: str = None, last_hours: int = 24, limit: int = 200) -> list[dict]:
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
+def get_events(agent_id: str = None, level: str = None, last_hours: int = 24, limit: int = 200, from_time: str = None, to_time: str = None) -> list[dict]:
+    cutoff = from_time or (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
         query = "SELECT * FROM events WHERE created_at >= {cutoff:String}"
         params = {"cutoff": cutoff}
+        if to_time:
+            query += " AND created_at <= {to_time:String}"
+            params["to_time"] = to_time
         if agent_id:
             query += " AND agent_id = {agent_id:String}"
             params["agent_id"] = agent_id
@@ -1103,12 +1125,14 @@ def get_events(agent_id: str = None, level: str = None, last_hours: int = 24, li
     elif IS_POSTGRES:
         query = "SELECT * FROM events WHERE created_at >= $1"
         params = [cutoff]; idx = 2
+        if to_time: query += f" AND created_at <= ${idx}"; params.append(to_time); idx += 1
         if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
         if level: query += f" AND level = ${idx}"; params.append(level); idx += 1
         query += f" ORDER BY created_at DESC LIMIT ${idx}"; params.append(limit)
         rows = db_execute("", query, params_pg=params, fetch=True) or []
     else:
         query = "SELECT * FROM events WHERE created_at >= ?"; params = [cutoff]
+        if to_time: query += " AND created_at <= ?"; params.append(to_time)
         if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
         if level: query += " AND level = ?"; params.append(level)
         query += " ORDER BY created_at DESC LIMIT ?"; params.append(limit)
@@ -1165,11 +1189,14 @@ def insert_logs(agent_id: str, logs: list[dict]):
             )
 
 
-def get_logs(agent_id: str = None, last_hours: int = 24, limit: int = 500) -> list[dict]:
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
+def get_logs(agent_id: str = None, last_hours: int = 24, limit: int = 500, from_time: str = None, to_time: str = None) -> list[dict]:
+    cutoff = from_time or (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
         query = "SELECT * FROM logs WHERE timestamp >= {cutoff:String}"
         params = {"cutoff": cutoff}
+        if to_time:
+            query += " AND timestamp <= {to_time:String}"
+            params["to_time"] = to_time
         if agent_id:
             query += " AND agent_id = {agent_id:String}"
             params["agent_id"] = agent_id
@@ -1178,11 +1205,13 @@ def get_logs(agent_id: str = None, last_hours: int = 24, limit: int = 500) -> li
         return _run_clickhouse(query, params=params, fetch=True) or []
     elif IS_POSTGRES:
         query = "SELECT * FROM logs WHERE timestamp >= $1"; params = [cutoff]; idx = 2
+        if to_time: query += f" AND timestamp <= ${idx}"; params.append(to_time); idx += 1
         if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
         query += f" ORDER BY timestamp DESC LIMIT ${idx}"; params.append(limit)
         return db_execute("", query, params_pg=params, fetch=True) or []
     else:
         query = "SELECT * FROM logs WHERE timestamp >= ?"; params = [cutoff]
+        if to_time: query += " AND timestamp <= ?"; params.append(to_time)
         if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
         query += " ORDER BY timestamp DESC LIMIT ?"; params.append(limit)
         return _run_sqlite(query, params, fetch=True) or []
@@ -1515,12 +1544,15 @@ def insert_traces(agent_id: str, traces: list[dict]):
             )
 
 
-def get_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100) -> list[dict]:
+def get_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100, from_time: str = None, to_time: str = None) -> list[dict]:
     """Query traces."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
+    cutoff = from_time or (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
     if IS_CLICKHOUSE:
         query = "SELECT * FROM traces WHERE timestamp >= {cutoff:String}"
         params = {"cutoff": cutoff}
+        if to_time:
+            query += " AND timestamp <= {to_time:String}"
+            params["to_time"] = to_time
         if agent_id:
             query += " AND agent_id = {agent_id:String}"
             params["agent_id"] = agent_id
@@ -1528,19 +1560,18 @@ def get_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100) -> 
         params["lim"] = limit
         rows = _run_clickhouse(query, params=params, fetch=True) or []
     elif IS_POSTGRES:
-        if agent_id:
-            rows = db_execute("", "SELECT * FROM traces WHERE agent_id = $1 AND timestamp >= $2 ORDER BY timestamp DESC LIMIT $3",
-                             params_pg=[agent_id, cutoff, limit], fetch=True) or []
-        else:
-            rows = db_execute("", "SELECT * FROM traces WHERE timestamp >= $1 ORDER BY timestamp DESC LIMIT $2",
-                             params_pg=[cutoff, limit], fetch=True) or []
+        query = "SELECT * FROM traces WHERE timestamp >= $1"
+        params = [cutoff]; idx = 2
+        if to_time: query += f" AND timestamp <= ${idx}"; params.append(to_time); idx += 1
+        if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
+        query += f" ORDER BY timestamp DESC LIMIT ${idx}"; params.append(limit)
+        rows = db_execute("", query, params_pg=params, fetch=True) or []
     else:
-        if agent_id:
-            rows = _run_sqlite("SELECT * FROM traces WHERE agent_id = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
-                              [agent_id, cutoff, limit], fetch=True) or []
-        else:
-            rows = _run_sqlite("SELECT * FROM traces WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
-                              [cutoff, limit], fetch=True) or []
+        query = "SELECT * FROM traces WHERE timestamp >= ?"; params = [cutoff]
+        if to_time: query += " AND timestamp <= ?"; params.append(to_time)
+        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
+        query += " ORDER BY timestamp DESC LIMIT ?"; params.append(limit)
+        rows = _run_sqlite(query, params, fetch=True) or []
     for r in rows:
         r["attributes"] = _parse_json_field(r.get("attributes"))
     return rows

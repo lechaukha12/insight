@@ -2,29 +2,33 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getLogs } from '../lib/api';
+import { useTimeRange } from '../lib/TimeRangeContext';
 import { timeAgo } from '../lib/hooks';
 
 export default function LogsPage() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [selected, setSelected] = useState(null);
+    const { queryParams, isLive } = useTimeRange();
 
     const fetchData = useCallback(async () => {
         try {
-            const result = await getLogs({ last_hours: 24, limit: 200 });
+            const result = await getLogs({ ...queryParams, limit: 200 });
             setData(result);
         } catch (err) {
             console.error(err);
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [queryParams]);
 
     useEffect(() => {
         fetchData();
-        const interval = setInterval(fetchData, 15000);
-        return () => clearInterval(interval);
-    }, [fetchData]);
+        if (isLive) {
+            const interval = setInterval(fetchData, 15000);
+            return () => clearInterval(interval);
+        }
+    }, [fetchData, isLive]);
 
     const logs = data?.logs || [];
 

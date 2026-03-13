@@ -2,7 +2,9 @@
 
 import { usePathname } from 'next/navigation';
 import { AuthProvider, useAuth } from './AuthProvider';
+import { TimeRangeProvider } from '../lib/TimeRangeContext';
 import Sidebar from './Sidebar';
+import TimeRangePicker from './TimeRangePicker';
 
 function AppShell({ children }) {
     const pathname = usePathname();
@@ -27,11 +29,16 @@ function AppShell({ children }) {
         return <>{children}</>;
     }
 
-    // Authenticated: show sidebar + content
+    // Authenticated: show sidebar + time picker + content
     return (
         <div className="app-layout">
             <Sidebar />
-            <main className="main-content">{children}</main>
+            <main className="main-content">
+                <div className="time-picker-bar">
+                    <TimeRangePicker />
+                </div>
+                {children}
+            </main>
         </div>
     );
 }
@@ -39,7 +46,9 @@ function AppShell({ children }) {
 export default function ClientLayout({ children }) {
     return (
         <AuthProvider>
-            <AppShell>{children}</AppShell>
+            <TimeRangeProvider>
+                <AppShell>{children}</AppShell>
+            </TimeRangeProvider>
         </AuthProvider>
     );
 }

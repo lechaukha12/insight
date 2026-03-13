@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getDashboardSummary, generateReport, getTraceSummary } from './lib/api';
 import { useWebSocket } from './lib/useWebSocket';
+import { useTimeRange } from './lib/TimeRangeContext';
 import { timeAgo } from './lib/hooks';
 import { MetricsLineChart, EventsBarChart, HealthDonut } from './components/Charts';
 import ClusterSelector from './components/ClusterSelector';
@@ -16,6 +17,7 @@ export default function DashboardPage() {
   const [sending, setSending] = useState(false);
   const [wsFlash, setWsFlash] = useState(null);
   const [traceSummary, setTraceSummary] = useState(null);
+  const { queryParams, isLive } = useTimeRange();
 
   const WS_URL = typeof window !== 'undefined' ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/dashboard` : '';
   const { lastMessage, isConnected } = useWebSocket(WS_URL);
@@ -23,17 +25,23 @@ export default function DashboardPage() {
   const fetchData = useCallback(async () => {
     try {
       const [result, traceData] = await Promise.all([
-        getDashboardSummary(clusterId),
+        getDashboardSummary(clusterId, queryParams),
         getTraceSummary(1).catch(() => null),
       ]);
       setData(result);
       if (traceData) setTraceSummary(traceData);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
-  }, [clusterId]);
+  }, [clusterId, queryParams]);
 
-  // Initial and periodic fetch as fallback
-  useEffect(() => { fetchData(); const i = setInterval(fetchData, 30000); return () => clearInterval(i); }, [fetchData]);
+  // Initial and periodic fetch (only auto-refresh in live mode)
+  useEffect(() => {
+    fetchData();
+    if (isLive) {
+      const i = setInterval(fetchData, 15000);
+      return () => clearInterval(i);
+    }
+  }, [fetchData, isLive]);
 
   // WebSocket-driven refresh
   useEffect(() => {
