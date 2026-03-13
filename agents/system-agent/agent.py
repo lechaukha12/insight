@@ -661,7 +661,7 @@ def main():
     logger.info(f"  Core URL:      {CORE_API_URL}")
     logger.info(f"  Auth:          {'Token' if AGENT_TOKEN else 'API Key (legacy)'}")
     logger.info(f"  Scan Interval: {SCAN_INTERVAL}s")
-    logger.info(f"  Thresholds:    CPU={CPU_THRESHOLD}%, RAM={MEMORY_THRESHOLD}%, Disk={DISK_THRESHOLD}%"))
+    logger.info(f"  Thresholds:    CPU={CPU_THRESHOLD}%, RAM={MEMORY_THRESHOLD}%, Disk={DISK_THRESHOLD}%")
     if OS_TYPE == "linux":
         logger.info(f"  Log files:     {LOG_FILES}")
         logger.info(f"  Journald:      {USE_JOURNALD}")
