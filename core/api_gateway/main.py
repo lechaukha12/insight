@@ -288,11 +288,19 @@ async def agent_heartbeat(agent_id: str):
 @app.delete("/api/v1/agents/{agent_id}")
 async def delete_agent_endpoint(agent_id: str, user: dict = Depends(require_role(["admin"]))):
     """Delete an agent by ID (admin only)."""
-    from shared.database.db import IS_POSTGRES, _run_pg, _run_sqlite
-    if IS_POSTGRES:
-        _run_pg("DELETE FROM agents WHERE id = $1", [agent_id])
-    else:
-        _run_sqlite("DELETE FROM agents WHERE id = ?", [agent_id])
+    from shared.database.db import get_agent, _insert, _version, _now
+    import json as _json
+    agent = get_agent(agent_id)
+    if agent:
+        _insert('agents',
+                ['id', 'name', 'agent_type', 'agent_category', 'hostname', 'cluster_id', 'status',
+                 'labels', 'token_id', 'agent_version', 'os_info', 'ip_address', 'last_heartbeat',
+                 '_version', '_deleted', 'created_at'],
+                [[agent_id, agent.get('name', ''), agent.get('agent_type', ''), agent.get('agent_category', ''),
+                  agent.get('hostname', ''), agent.get('cluster_id', ''), 'deleted',
+                  _json.dumps(agent.get('labels', {})) if isinstance(agent.get('labels'), dict) else agent.get('labels', '{}'),
+                  agent.get('token_id', ''), agent.get('agent_version', ''), agent.get('os_info', ''),
+                  agent.get('ip_address', ''), agent.get('last_heartbeat', _now()), _version(), 1, agent.get('created_at', _now())]])
     insert_audit_log(user["id"], user["username"], "delete_agent", "agent", {"agent_id": agent_id})
     return {"status": "deleted", "agent_id": agent_id}
 

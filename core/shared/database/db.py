@@ -1,428 +1,27 @@
 """
 Insight Monitoring System - Database Connection & Operations
-Supports PostgreSQL (production) and SQLite (dev fallback).
-Set DATABASE_URL env var:
-  - postgresql://user:pass@host:5432/insight  → PostgreSQL
-  - /path/to/file.db or insight.db            → SQLite
+ClickHouse-only backend (v5.1.0)
+Set CLICKHOUSE_URL env var: http://clickhouse:8123
 """
 
 import json
 import os
-import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-DATABASE_URL = os.getenv("DATABASE_URL", "insight.db")
-CLICKHOUSE_URL = os.getenv("CLICKHOUSE_URL", "")  # e.g. http://clickhouse:8123
-
-# Detect database type
-IS_POSTGRES = DATABASE_URL.startswith("postgres")
-IS_CLICKHOUSE = bool(CLICKHOUSE_URL)
-
-# PostgreSQL table creation (with JSONB)
-_PG_CREATE_TABLES = """
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT DEFAULT 'admin',
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS clusters (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    status TEXT DEFAULT 'active',
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS agent_tokens (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    token TEXT NOT NULL UNIQUE,
-    agent_type TEXT DEFAULT 'any',
-    cluster_id TEXT DEFAULT 'default',
-    created_by TEXT DEFAULT '',
-    last_used TIMESTAMPTZ,
-    agent_count INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS agents (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    agent_type TEXT NOT NULL,
-    agent_category TEXT DEFAULT 'system',
-    hostname TEXT DEFAULT '',
-    cluster_id TEXT DEFAULT 'default',
-    status TEXT DEFAULT 'active',
-    labels JSONB DEFAULT '{}',
-    token_id TEXT DEFAULT '',
-    agent_version TEXT DEFAULT '',
-    os_info TEXT DEFAULT '',
-    ip_address TEXT DEFAULT '',
-    last_heartbeat TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS metrics (
-    id SERIAL PRIMARY KEY,
-    agent_id TEXT NOT NULL REFERENCES agents(id),
-    metric_name TEXT NOT NULL,
-    metric_value DOUBLE PRECISION NOT NULL,
-    labels JSONB DEFAULT '{}',
-    timestamp TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_metrics_agent ON metrics(agent_id);
-CREATE INDEX IF NOT EXISTS idx_metrics_time ON metrics(timestamp);
-CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(metric_name);
-
-CREATE TABLE IF NOT EXISTS events (
-    id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL REFERENCES agents(id),
-    level TEXT NOT NULL,
-    title TEXT NOT NULL,
-    message TEXT DEFAULT '',
-    source TEXT DEFAULT '',
-    namespace TEXT DEFAULT '',
-    resource TEXT DEFAULT '',
-    details JSONB DEFAULT '{}',
-    acknowledged BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id);
-CREATE INDEX IF NOT EXISTS idx_events_level ON events(level);
-CREATE INDEX IF NOT EXISTS idx_events_time ON events(created_at);
-
-CREATE TABLE IF NOT EXISTS logs (
-    id SERIAL PRIMARY KEY,
-    agent_id TEXT NOT NULL REFERENCES agents(id),
-    namespace TEXT DEFAULT '',
-    pod_name TEXT DEFAULT '',
-    container TEXT DEFAULT '',
-    log_level TEXT DEFAULT 'error',
-    message TEXT DEFAULT '',
-    timestamp TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_logs_agent ON logs(agent_id);
-CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(timestamp);
-
-CREATE TABLE IF NOT EXISTS alert_configs (
-    id TEXT PRIMARY KEY,
-    channel TEXT NOT NULL,
-    config JSONB NOT NULL DEFAULT '{}',
-    enabled BOOLEAN DEFAULT TRUE,
-    alert_levels JSONB DEFAULT '["critical","error"]',
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS notification_rules (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    metric_name TEXT NOT NULL,
-    operator TEXT NOT NULL DEFAULT '>',
-    threshold DOUBLE PRECISION NOT NULL,
-    duration_minutes INTEGER DEFAULT 5,
-    channels JSONB DEFAULT '["telegram"]',
-    enabled BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS reports (
-    id TEXT PRIMARY KEY,
-    report_type TEXT NOT NULL,
-    content JSONB DEFAULT '{}',
-    generated_at TIMESTAMPTZ DEFAULT NOW(),
-    sent_to JSONB DEFAULT '[]'
-);
-
-CREATE TABLE IF NOT EXISTS webhooks (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    url TEXT NOT NULL,
-    type TEXT NOT NULL DEFAULT 'custom',
-    events JSONB DEFAULT '["critical","error"]',
-    enabled BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS processes (
-    id SERIAL PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    snapshot JSONB NOT NULL DEFAULT '[]',
-    timestamp TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS traces (
-    id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    trace_id TEXT,
-    span_name TEXT,
-    service_name TEXT,
-    duration_ms DOUBLE PRECISION,
-    status TEXT DEFAULT 'ok',
-    attributes JSONB DEFAULT '{}',
-    timestamp TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value JSONB NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS audit_logs (
-    id SERIAL PRIMARY KEY,
-    user_id TEXT DEFAULT 'system',
-    username TEXT DEFAULT 'system',
-    action TEXT NOT NULL,
-    resource TEXT DEFAULT '',
-    details JSONB DEFAULT '{}',
-    ip TEXT DEFAULT '',
-    timestamp TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_logs(timestamp);
-CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
-
--- Insert default cluster
-INSERT INTO clusters (id, name, description) VALUES ('default', 'Default Cluster', 'Default monitoring cluster')
-ON CONFLICT (id) DO NOTHING;
-"""
-
-# SQLite table creation (backward compatible)
-_SQLITE_CREATE_TABLES = """
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT DEFAULT 'admin',
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS clusters (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    status TEXT DEFAULT 'active',
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS agent_tokens (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    token TEXT NOT NULL UNIQUE,
-    agent_type TEXT DEFAULT 'any',
-    cluster_id TEXT DEFAULT 'default',
-    created_by TEXT DEFAULT '',
-    last_used TEXT,
-    agent_count INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS agents (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    agent_type TEXT NOT NULL,
-    agent_category TEXT DEFAULT 'system',
-    hostname TEXT DEFAULT '',
-    cluster_id TEXT DEFAULT 'default',
-    status TEXT DEFAULT 'active',
-    labels TEXT DEFAULT '{}',
-    token_id TEXT DEFAULT '',
-    agent_version TEXT DEFAULT '',
-    os_info TEXT DEFAULT '',
-    ip_address TEXT DEFAULT '',
-    last_heartbeat TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS metrics (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id TEXT NOT NULL,
-    metric_name TEXT NOT NULL,
-    metric_value REAL NOT NULL,
-    labels TEXT DEFAULT '{}',
-    timestamp TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (agent_id) REFERENCES agents(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_metrics_agent ON metrics(agent_id);
-CREATE INDEX IF NOT EXISTS idx_metrics_time ON metrics(timestamp);
-CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(metric_name);
-
-CREATE TABLE IF NOT EXISTS events (
-    id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    level TEXT NOT NULL,
-    title TEXT NOT NULL,
-    message TEXT DEFAULT '',
-    source TEXT DEFAULT '',
-    namespace TEXT DEFAULT '',
-    resource TEXT DEFAULT '',
-    details TEXT DEFAULT '{}',
-    acknowledged INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (agent_id) REFERENCES agents(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id);
-CREATE INDEX IF NOT EXISTS idx_events_level ON events(level);
-CREATE INDEX IF NOT EXISTS idx_events_time ON events(created_at);
-
-CREATE TABLE IF NOT EXISTS logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id TEXT NOT NULL,
-    namespace TEXT DEFAULT '',
-    pod_name TEXT DEFAULT '',
-    container TEXT DEFAULT '',
-    log_level TEXT DEFAULT 'error',
-    message TEXT DEFAULT '',
-    timestamp TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (agent_id) REFERENCES agents(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_logs_agent ON logs(agent_id);
-CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(timestamp);
-
-CREATE TABLE IF NOT EXISTS alert_configs (
-    id TEXT PRIMARY KEY,
-    channel TEXT NOT NULL,
-    config TEXT NOT NULL DEFAULT '{}',
-    enabled INTEGER DEFAULT 1,
-    alert_levels TEXT DEFAULT '["critical","error"]',
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS notification_rules (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    metric_name TEXT NOT NULL,
-    operator TEXT NOT NULL DEFAULT '>',
-    threshold REAL NOT NULL,
-    duration_minutes INTEGER DEFAULT 5,
-    channels TEXT DEFAULT '["telegram"]',
-    enabled INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS reports (
-    id TEXT PRIMARY KEY,
-    report_type TEXT NOT NULL,
-    content TEXT DEFAULT '{}',
-    generated_at TEXT DEFAULT (datetime('now')),
-    sent_to TEXT DEFAULT '[]'
-);
-
-CREATE TABLE IF NOT EXISTS webhooks (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    url TEXT NOT NULL,
-    type TEXT NOT NULL DEFAULT 'custom',
-    events TEXT DEFAULT '["critical","error"]',
-    enabled INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS processes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id TEXT NOT NULL,
-    snapshot TEXT NOT NULL DEFAULT '[]',
-    timestamp TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS traces (
-    id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    trace_id TEXT,
-    span_name TEXT,
-    service_name TEXT,
-    duration_ms REAL,
-    status TEXT DEFAULT 'ok',
-    attributes TEXT DEFAULT '{}',
-    timestamp TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS audit_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT DEFAULT 'system',
-    username TEXT DEFAULT 'system',
-    action TEXT NOT NULL,
-    resource TEXT DEFAULT '',
-    details TEXT DEFAULT '{}',
-    ip TEXT DEFAULT '',
-    timestamp TEXT DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_logs(timestamp);
-CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id);
-"""
-
-# ─── PostgreSQL Connection ───
-
-_pg_pool = None
-
-def _get_pg_pool():
-    global _pg_pool
-    if _pg_pool is None:
-        import asyncpg
-        import asyncio
-        loop = asyncio.get_event_loop()
-        _pg_pool = loop.run_until_complete(
-            asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
-        )
-    return _pg_pool
-
-@contextmanager
-def pg_connection():
-    import asyncio
-    pool = _get_pg_pool()
-    loop = asyncio.get_event_loop()
-    conn = loop.run_until_complete(pool.acquire())
-    try:
-        yield conn
-    finally:
-        loop.run_until_complete(pool.release(conn))
-
-# ─── SQLite Connection ───
-
-@contextmanager
-def sqlite_connection():
-    conn = sqlite3.connect(DATABASE_URL)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+CLICKHOUSE_URL = os.getenv("CLICKHOUSE_URL", "http://localhost:8123")
 
 # ─── ClickHouse Connection ───
 
 _ch_client = None
 
+
 def _get_ch_client():
     """Get or create ClickHouse client singleton."""
     global _ch_client
-    if _ch_client is None and IS_CLICKHOUSE:
+    if _ch_client is None:
         import clickhouse_connect
         from urllib.parse import urlparse
         parsed = urlparse(CLICKHOUSE_URL)
@@ -435,7 +34,7 @@ def _get_ch_client():
     return _ch_client
 
 
-def _run_clickhouse(query, params=None, fetch=False):
+def _run(query, params=None, fetch=False):
     """Run a ClickHouse query."""
     client = _get_ch_client()
     if fetch:
@@ -447,12 +46,11 @@ def _run_clickhouse(query, params=None, fetch=False):
         return None
 
 
-def _run_ch_insert(table, columns, data):
+def _insert(table, columns, data):
     """Batch insert into ClickHouse."""
     client = _get_ch_client()
     if data:
-        # Convert string timestamps to datetime objects for ClickHouse
-        ts_cols = {i for i, c in enumerate(columns) if c in ('timestamp', 'created_at')}
+        ts_cols = {i for i, c in enumerate(columns) if c in ('timestamp', 'created_at', 'updated_at', 'last_heartbeat', 'last_used', 'generated_at')}
         if ts_cols:
             converted = []
             for row in data:
@@ -464,111 +62,150 @@ def _run_ch_insert(table, columns, data):
                             new_row[i] = datetime.strptime(v, '%Y-%m-%d %H:%M:%S')
                         except (ValueError, TypeError):
                             new_row[i] = datetime.now(timezone.utc).replace(tzinfo=None)
+                    elif v is None:
+                        new_row[i] = datetime.now(timezone.utc).replace(tzinfo=None)
                 converted.append(new_row)
             data = converted
         client.insert(table, data, column_names=columns)
 
 
-def init_clickhouse():
-    """Verify ClickHouse tables exist."""
-    if not IS_CLICKHOUSE:
-        return
-    try:
-        client = _get_ch_client()
-        tables = client.command("SHOW TABLES FROM insight")
-        print(f"[DB] ClickHouse connected: {tables}")
-    except Exception as e:
-        print(f"[DB] ClickHouse connection error: {e}")
+def _now():
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
 
-# ─── Unified Interface ───
-
-@contextmanager
-def get_connection():
-    """Get a database connection (PostgreSQL or SQLite)."""
-    if IS_POSTGRES:
-        with pg_connection() as conn:
-            yield conn
-    else:
-        with sqlite_connection() as conn:
-            yield conn
-
-
-def _run_pg(query, params=None, fetch=False, fetchone=False):
-    """Run a PostgreSQL query synchronously."""
-    import asyncio
-    pool = _get_pg_pool()
-
-    async def _exec():
-        async with pool.acquire() as conn:
-            if fetchone:
-                return await conn.fetchrow(query, *(params or []))
-            elif fetch:
-                return await conn.fetch(query, *(params or []))
-            else:
-                return await conn.execute(query, *(params or []))
-    
-    loop = asyncio.get_event_loop()
-    return loop.run_until_complete(_exec())
-
-
-def _run_sqlite(query, params=None, fetch=False, fetchone=False):
-    """Run a SQLite query synchronously."""
-    with sqlite_connection() as conn:
-        cursor = conn.execute(query, params or [])
-        if fetchone:
-            row = cursor.fetchone()
-            return dict(row) if row else None
-        elif fetch:
-            return [dict(r) for r in cursor.fetchall()]
-        return None
-
-
-def db_execute(query_sqlite, query_pg=None, params_sqlite=None, params_pg=None, fetch=False, fetchone=False):
-    """Execute query on the appropriate database."""
-    if IS_POSTGRES:
-        q = query_pg or query_sqlite
-        p = params_pg or params_sqlite
-        result = _run_pg(q, p, fetch=fetch, fetchone=fetchone)
-        if fetch and result:
-            return [dict(r) for r in result]
-        elif fetchone and result:
-            return dict(result)
-        return result
-    else:
-        return _run_sqlite(query_sqlite, params_sqlite, fetch=fetch, fetchone=fetchone)
+def _version():
+    """Generate a version number for ReplacingMergeTree."""
+    import time
+    return int(time.time() * 1000)
 
 
 def init_db():
-    """Initialize database tables."""
-    if IS_POSTGRES:
-        import asyncio
-        pool = _get_pg_pool()
-        async def _init():
-            async with pool.acquire() as conn:
-                await conn.execute(_PG_CREATE_TABLES)
-                try:
-                    await conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_category TEXT DEFAULT 'system'")
-                except Exception:
-                    pass
-        asyncio.get_event_loop().run_until_complete(_init())
-        print("[DB] PostgreSQL initialized successfully")
-    else:
-        with sqlite_connection() as conn:
-            conn.executescript(_SQLITE_CREATE_TABLES)
-            try:
-                conn.execute("ALTER TABLE agents ADD COLUMN agent_category TEXT DEFAULT 'system'")
-            except Exception:
-                pass
-            conn.execute(
-                "INSERT OR IGNORE INTO clusters (id, name, description) VALUES (?, ?, ?)",
-                ('default', 'Default Cluster', 'Default monitoring cluster')
-            )
-        print("[DB] SQLite initialized successfully")
-    # Initialize ClickHouse for time-series data
-    if IS_CLICKHOUSE:
-        init_clickhouse()
-        print("[DB] ClickHouse initialized for time-series data")
+    """Initialize ClickHouse tables. Creates all tables if they don't exist."""
+    try:
+        client = _get_ch_client()
+
+        # Config tables (ReplacingMergeTree)
+        _config_tables = [
+            """CREATE TABLE IF NOT EXISTS users (
+                id String, username String, password_hash String, role String DEFAULT 'admin',
+                _version UInt64 DEFAULT toUnixTimestamp(now()), _deleted UInt8 DEFAULT 0,
+                created_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(_version) ORDER BY id""",
+
+            """CREATE TABLE IF NOT EXISTS clusters (
+                id String, name String, description String DEFAULT '', status String DEFAULT 'active',
+                _version UInt64 DEFAULT toUnixTimestamp(now()), _deleted UInt8 DEFAULT 0,
+                created_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(_version) ORDER BY id""",
+
+            """CREATE TABLE IF NOT EXISTS agents (
+                id String, name String, agent_type String, agent_category String DEFAULT 'system',
+                hostname String DEFAULT '', cluster_id String DEFAULT 'default', status String DEFAULT 'active',
+                labels String DEFAULT '{}', token_id String DEFAULT '', agent_version String DEFAULT '',
+                os_info String DEFAULT '', ip_address String DEFAULT '', last_heartbeat DateTime DEFAULT now(),
+                _version UInt64 DEFAULT toUnixTimestamp(now()), _deleted UInt8 DEFAULT 0,
+                created_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(_version) ORDER BY id""",
+
+            """CREATE TABLE IF NOT EXISTS agent_tokens (
+                id String, name String, token String, agent_type String DEFAULT 'any',
+                cluster_id String DEFAULT 'default', created_by String DEFAULT '',
+                last_used DateTime DEFAULT now(), agent_count UInt32 DEFAULT 0, is_active UInt8 DEFAULT 1,
+                _version UInt64 DEFAULT toUnixTimestamp(now()), _deleted UInt8 DEFAULT 0,
+                created_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(_version) ORDER BY id""",
+
+            """CREATE TABLE IF NOT EXISTS alert_configs (
+                id String, channel String, config String DEFAULT '{}', enabled UInt8 DEFAULT 1,
+                alert_levels String DEFAULT '["critical","error"]',
+                _version UInt64 DEFAULT toUnixTimestamp(now()), _deleted UInt8 DEFAULT 0,
+                created_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(_version) ORDER BY id""",
+
+            """CREATE TABLE IF NOT EXISTS notification_rules (
+                id String, name String, metric_name String, operator String DEFAULT '>',
+                threshold Float64, duration_minutes UInt32 DEFAULT 5, channels String DEFAULT '["telegram"]',
+                enabled UInt8 DEFAULT 1, _version UInt64 DEFAULT toUnixTimestamp(now()),
+                _deleted UInt8 DEFAULT 0, created_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(_version) ORDER BY id""",
+
+            """CREATE TABLE IF NOT EXISTS webhooks (
+                id String, name String, url String, type String DEFAULT 'custom',
+                events String DEFAULT '["critical","error"]', enabled UInt8 DEFAULT 1,
+                _version UInt64 DEFAULT toUnixTimestamp(now()), _deleted UInt8 DEFAULT 0,
+                created_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(_version) ORDER BY id""",
+
+            """CREATE TABLE IF NOT EXISTS settings (
+                key String, value String,
+                _version UInt64 DEFAULT toUnixTimestamp(now()), _deleted UInt8 DEFAULT 0,
+                updated_at DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(_version) ORDER BY key""",
+        ]
+
+        # Time-series tables (MergeTree)
+        _ts_tables = [
+            """CREATE TABLE IF NOT EXISTS metrics (
+                id UInt64, agent_id String, metric_name String, metric_value Float64,
+                labels String DEFAULT '{}', timestamp DateTime DEFAULT now()
+            ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+            ORDER BY (agent_id, metric_name, timestamp) TTL timestamp + INTERVAL 30 DAY DELETE""",
+
+            """CREATE TABLE IF NOT EXISTS events (
+                id String, agent_id String, level String, title String, message String DEFAULT '',
+                source String DEFAULT '', namespace String DEFAULT '', resource String DEFAULT '',
+                details String DEFAULT '{}', acknowledged UInt8 DEFAULT 0, created_at DateTime DEFAULT now()
+            ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(created_at)
+            ORDER BY (agent_id, level, created_at) TTL created_at + INTERVAL 30 DAY DELETE""",
+
+            """CREATE TABLE IF NOT EXISTS logs (
+                id UInt64, agent_id String, namespace String DEFAULT '', pod_name String DEFAULT '',
+                container String DEFAULT '', log_level String DEFAULT 'error', message String DEFAULT '',
+                timestamp DateTime DEFAULT now()
+            ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+            ORDER BY (agent_id, log_level, timestamp) TTL timestamp + INTERVAL 14 DAY DELETE""",
+
+            """CREATE TABLE IF NOT EXISTS traces (
+                id String, agent_id String, trace_id String DEFAULT '', span_name String DEFAULT '',
+                service_name String DEFAULT '', duration_ms Float64 DEFAULT 0, status String DEFAULT 'ok',
+                attributes String DEFAULT '{}', timestamp DateTime DEFAULT now()
+            ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+            ORDER BY (agent_id, service_name, timestamp) TTL timestamp + INTERVAL 7 DAY DELETE""",
+
+            """CREATE TABLE IF NOT EXISTS processes (
+                id UInt64, agent_id String, snapshot String DEFAULT '[]', timestamp DateTime DEFAULT now()
+            ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+            ORDER BY (agent_id, timestamp) TTL timestamp + INTERVAL 3 DAY DELETE""",
+
+            """CREATE TABLE IF NOT EXISTS audit_logs (
+                id UInt64, user_id String DEFAULT 'system', username String DEFAULT 'system',
+                action String, resource String DEFAULT '', details String DEFAULT '{}',
+                ip String DEFAULT '', timestamp DateTime DEFAULT now()
+            ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+            ORDER BY (user_id, timestamp) TTL timestamp + INTERVAL 90 DAY DELETE""",
+
+            """CREATE TABLE IF NOT EXISTS reports (
+                id String, report_type String, content String DEFAULT '{}',
+                generated_at DateTime DEFAULT now(), sent_to String DEFAULT '[]'
+            ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(generated_at)
+            ORDER BY (report_type, generated_at)""",
+        ]
+
+        for sql in _config_tables + _ts_tables:
+            client.command(sql)
+
+        # Insert default cluster if not exists
+        existing = client.query("SELECT id FROM clusters FINAL WHERE id = 'default' AND _deleted = 0")
+        if not existing.result_rows:
+            _insert('clusters', ['id', 'name', 'description', 'status', '_version', '_deleted', 'created_at'],
+                    [['default', 'Default Cluster', 'Default monitoring cluster', 'active', 1, 0, _now()]])
+
+        tables = client.command("SHOW TABLES FROM insight")
+        print(f"[DB] ClickHouse connected: {tables}")
+        print("[DB] ClickHouse initialized successfully")
+    except Exception as e:
+        print(f"[DB] ClickHouse connection error: {e}")
+        raise
 
 
 def _parse_json_field(value, default="{}"):
@@ -581,283 +218,258 @@ def _parse_json_field(value, default="{}"):
         return json.loads(default)
 
 
-# ─── User CRUD ───
+# ═══════════════════════════════════════════════════════════
+# User CRUD (ReplacingMergeTree)
+# ═══════════════════════════════════════════════════════════
 
 def create_user(username: str, password_hash: str, role: str = "admin") -> dict:
     user_id = str(uuid.uuid4())
-    if IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO users (id, username, password_hash, role) VALUES ($1, $2, $3, $4)",
-            [user_id, username, password_hash, role]
-        )
-    else:
-        _run_sqlite(
-            "INSERT INTO users (id, username, password_hash, role) VALUES (?, ?, ?, ?)",
-            [user_id, username, password_hash, role]
-        )
+    _insert('users', ['id', 'username', 'password_hash', 'role', '_version', '_deleted', 'created_at'],
+            [[user_id, username, password_hash, role, _version(), 0, _now()]])
     return {"id": user_id, "username": username, "role": role}
 
 
 def get_user_by_username(username: str) -> dict | None:
-    if IS_POSTGRES:
-        return db_execute(
-            "", "SELECT * FROM users WHERE username = $1",
-            params_pg=[username], fetchone=True
-        )
-    else:
-        return _run_sqlite("SELECT * FROM users WHERE username = ?", [username], fetchone=True)
+    rows = _run("SELECT * FROM users FINAL WHERE _deleted = 0 AND username = {u:String}",
+                params={"u": username}, fetch=True) or []
+    return rows[0] if rows else None
 
 
 def get_user_by_id(user_id: str) -> dict | None:
-    if IS_POSTGRES:
-        return db_execute("", "SELECT * FROM users WHERE id = $1", params_pg=[user_id], fetchone=True)
-    else:
-        return _run_sqlite("SELECT * FROM users WHERE id = ?", [user_id], fetchone=True)
+    rows = _run("SELECT * FROM users FINAL WHERE _deleted = 0 AND id = {uid:String}",
+                params={"uid": user_id}, fetch=True) or []
+    return rows[0] if rows else None
 
 
-# ─── Cluster CRUD ───
+def list_users() -> list[dict]:
+    return _run("SELECT id, username, role, created_at FROM users FINAL WHERE _deleted = 0 ORDER BY created_at DESC",
+                fetch=True) or []
+
+
+def update_user_password(user_id: str, new_password_hash: str):
+    user = get_user_by_id(user_id)
+    if user:
+        _insert('users', ['id', 'username', 'password_hash', 'role', '_version', '_deleted', 'created_at'],
+                [[user_id, user['username'], new_password_hash, user.get('role', 'admin'), _version(), 0, user.get('created_at', _now())]])
+
+
+def delete_user(user_id: str):
+    user = get_user_by_id(user_id)
+    if user:
+        _insert('users', ['id', 'username', 'password_hash', 'role', '_version', '_deleted', 'created_at'],
+                [[user_id, user['username'], user['password_hash'], user.get('role', 'admin'), _version(), 1, user.get('created_at', _now())]])
+
+
+# ═══════════════════════════════════════════════════════════
+# Cluster CRUD (ReplacingMergeTree)
+# ═══════════════════════════════════════════════════════════
 
 def create_cluster(name: str, description: str = "") -> dict:
     cluster_id = str(uuid.uuid4())
-    if IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO clusters (id, name, description) VALUES ($1, $2, $3)",
-            [cluster_id, name, description]
-        )
-    else:
-        _run_sqlite(
-            "INSERT INTO clusters (id, name, description) VALUES (?, ?, ?)",
-            [cluster_id, name, description]
-        )
+    _insert('clusters', ['id', 'name', 'description', 'status', '_version', '_deleted', 'created_at'],
+            [[cluster_id, name, description, 'active', _version(), 0, _now()]])
     return {"id": cluster_id, "name": name, "description": description, "status": "active"}
 
 
 def list_clusters() -> list[dict]:
-    if IS_POSTGRES:
-        return db_execute("", "SELECT * FROM clusters ORDER BY created_at DESC", fetch=True) or []
-    else:
-        return _run_sqlite("SELECT * FROM clusters ORDER BY created_at DESC", fetch=True) or []
+    return _run("SELECT * FROM clusters FINAL WHERE _deleted = 0 ORDER BY created_at DESC", fetch=True) or []
 
 
 def get_cluster(cluster_id: str) -> dict | None:
-    if IS_POSTGRES:
-        return db_execute("", "SELECT * FROM clusters WHERE id = $1", params_pg=[cluster_id], fetchone=True)
-    else:
-        return _run_sqlite("SELECT * FROM clusters WHERE id = ?", [cluster_id], fetchone=True)
+    rows = _run("SELECT * FROM clusters FINAL WHERE _deleted = 0 AND id = {cid:String}",
+                params={"cid": cluster_id}, fetch=True) or []
+    return rows[0] if rows else None
 
 
-# ─── Agent CRUD ───
+# ═══════════════════════════════════════════════════════════
+# Agent CRUD (ReplacingMergeTree)
+# ═══════════════════════════════════════════════════════════
 
 def _resolve_category(agent_type: str, agent_category: str = None) -> str:
-    """Auto-resolve agent_category from agent_type if not provided."""
     if agent_category:
         return agent_category
-    app_types = {"opentelemetry"}
-    return "application" if agent_type in app_types else "system"
+    return "application" if agent_type in {"opentelemetry"} else "system"
 
 
-def register_agent(name: str, agent_type: str, hostname: str = "", labels: dict = None, cluster_id: str = "default", agent_category: str = None) -> dict:
+def register_agent(name: str, agent_type: str, hostname: str = "", labels: dict = None,
+                    cluster_id: str = "default", agent_category: str = None) -> dict:
     agent_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-    labels_val = json.dumps(labels or {})
+    now = _now()
     category = _resolve_category(agent_type, agent_category)
-    if IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO agents (id, name, agent_type, agent_category, hostname, cluster_id, status, labels, last_heartbeat) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8)",
-            [agent_id, name, agent_type, category, hostname, cluster_id, labels_val, now]
-        )
-    else:
-        _run_sqlite(
-            "INSERT INTO agents (id, name, agent_type, agent_category, hostname, cluster_id, status, labels, last_heartbeat, created_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
-            [agent_id, name, agent_type, category, hostname, cluster_id, labels_val, now, now]
-        )
+    _insert('agents',
+            ['id', 'name', 'agent_type', 'agent_category', 'hostname', 'cluster_id', 'status',
+             'labels', 'token_id', 'agent_version', 'os_info', 'ip_address', 'last_heartbeat',
+             '_version', '_deleted', 'created_at'],
+            [[agent_id, name, agent_type, category, hostname, cluster_id, 'active',
+              json.dumps(labels or {}), '', '', '', '', now, _version(), 0, now]])
     return {"id": agent_id, "name": name, "agent_type": agent_type, "agent_category": category, "status": "active"}
 
 
 def get_agent(agent_id: str) -> dict | None:
-    if IS_POSTGRES:
-        row = db_execute("", "SELECT * FROM agents WHERE id = $1", params_pg=[agent_id], fetchone=True)
-    else:
-        row = _run_sqlite("SELECT * FROM agents WHERE id = ?", [agent_id], fetchone=True)
-    if row:
-        row["labels"] = _parse_json_field(row.get("labels"))
-    return row
+    rows = _run("SELECT * FROM agents FINAL WHERE _deleted = 0 AND id = {aid:String}",
+                params={"aid": agent_id}, fetch=True) or []
+    if rows:
+        rows[0]["labels"] = _parse_json_field(rows[0].get("labels"))
+    return rows[0] if rows else None
 
 
-def get_or_create_agent(agent_id: str, name: str, agent_type: str, hostname: str = "", cluster_id: str = "default", agent_category: str = None) -> dict:
+def get_or_create_agent(agent_id: str, name: str, agent_type: str, hostname: str = "",
+                         cluster_id: str = "default", agent_category: str = None) -> dict:
     agent = get_agent(agent_id)
     if agent:
-        # Update category if provided and different
         if agent_category and agent.get("agent_category") != agent_category:
-            if IS_POSTGRES:
-                _run_pg("UPDATE agents SET agent_category=$1 WHERE id=$2", [agent_category, agent_id])
-            else:
-                _run_sqlite("UPDATE agents SET agent_category=? WHERE id=?", [agent_category, agent_id])
+            _upsert_agent(agent_id, agent, updates={"agent_category": agent_category})
         update_agent_heartbeat(agent_id)
         return agent
     return register_agent_with_id(agent_id, name, agent_type, hostname, cluster_id=cluster_id, agent_category=agent_category)
 
 
-def register_agent_with_id(agent_id: str, name: str, agent_type: str, hostname: str = "", labels: dict = None, cluster_id: str = "default", agent_category: str = None) -> dict:
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-    labels_val = json.dumps(labels or {})
+def register_agent_with_id(agent_id: str, name: str, agent_type: str, hostname: str = "",
+                            labels: dict = None, cluster_id: str = "default", agent_category: str = None) -> dict:
+    now = _now()
     category = _resolve_category(agent_type, agent_category)
-    if IS_POSTGRES:
-        _run_pg(
-            """INSERT INTO agents (id, name, agent_type, agent_category, hostname, cluster_id, status, labels, last_heartbeat)
-               VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8)
-               ON CONFLICT (id) DO UPDATE SET name=$2, agent_category=$4, last_heartbeat=$8, status='active'""",
-            [agent_id, name, agent_type, category, hostname, cluster_id, labels_val, now]
-        )
-    else:
-        _run_sqlite(
-            "INSERT OR REPLACE INTO agents (id, name, agent_type, agent_category, hostname, cluster_id, status, labels, last_heartbeat, created_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
-            [agent_id, name, agent_type, category, hostname, cluster_id, labels_val, now, now]
-        )
+    _insert('agents',
+            ['id', 'name', 'agent_type', 'agent_category', 'hostname', 'cluster_id', 'status',
+             'labels', 'token_id', 'agent_version', 'os_info', 'ip_address', 'last_heartbeat',
+             '_version', '_deleted', 'created_at'],
+            [[agent_id, name, agent_type, category, hostname, cluster_id, 'active',
+              json.dumps(labels or {}), '', '', '', '', now, _version(), 0, now]])
     return {"id": agent_id, "name": name, "agent_type": agent_type, "agent_category": category, "status": "active"}
 
 
+def _upsert_agent(agent_id: str, existing: dict, updates: dict = None):
+    """Re-insert agent row with updated fields for ReplacingMergeTree."""
+    row = {**existing, **(updates or {})}
+    _insert('agents',
+            ['id', 'name', 'agent_type', 'agent_category', 'hostname', 'cluster_id', 'status',
+             'labels', 'token_id', 'agent_version', 'os_info', 'ip_address', 'last_heartbeat',
+             '_version', '_deleted', 'created_at'],
+            [[agent_id, row.get('name', ''), row.get('agent_type', 'system'), row.get('agent_category', 'system'),
+              row.get('hostname', ''), row.get('cluster_id', 'default'), row.get('status', 'active'),
+              json.dumps(row.get('labels', {})) if isinstance(row.get('labels'), dict) else row.get('labels', '{}'),
+              row.get('token_id', ''), row.get('agent_version', ''), row.get('os_info', ''),
+              row.get('ip_address', ''), row.get('last_heartbeat', _now()),
+              _version(), 0, row.get('created_at', _now())]])
+
+
 def list_agents(cluster_id: str = None, from_time: str = None, to_time: str = None) -> list[dict]:
-    """List agents. Excludes agents whose token has been revoked. If from_time is set, only return agents with heartbeat >= from_time."""
-    conditions = []
-    params_pg = []
-    params_sq = []
-    idx = 1
+    query = "SELECT * FROM agents FINAL WHERE _deleted = 0"
+    params = {}
     if cluster_id and cluster_id != 'all':
-        if IS_POSTGRES:
-            conditions.append(f"a.cluster_id = ${idx}"); params_pg.append(cluster_id); idx += 1
-        else:
-            conditions.append("a.cluster_id = ?"); params_sq.append(cluster_id)
+        query += " AND cluster_id = {cid:String}"
+        params["cid"] = cluster_id
     if from_time:
-        if IS_POSTGRES:
-            conditions.append(f"a.last_heartbeat >= ${idx}"); params_pg.append(from_time); idx += 1
-        else:
-            conditions.append("a.last_heartbeat >= ?"); params_sq.append(from_time)
+        query += " AND last_heartbeat >= {ft:String}"
+        params["ft"] = from_time
     if to_time:
-        if IS_POSTGRES:
-            conditions.append(f"a.last_heartbeat <= ${idx}"); params_pg.append(to_time); idx += 1
-        else:
-            conditions.append("a.last_heartbeat <= ?"); params_sq.append(to_time)
+        query += " AND last_heartbeat <= {tt:String}"
+        params["tt"] = to_time
     # Exclude agents whose token has been revoked
-    conditions.append("(t.is_active = 1 OR a.token_id = '' OR t.id IS NULL)")
-    where = " WHERE " + " AND ".join(conditions)
-    query = f"SELECT a.* FROM agents a LEFT JOIN agent_tokens t ON a.token_id = t.id{where} ORDER BY a.created_at DESC"
-    if IS_POSTGRES:
-        rows = db_execute("", query, params_pg=params_pg, fetch=True) or []
-    else:
-        rows = _run_sqlite(query, params_sq, fetch=True) or []
+    query += """ AND (token_id = '' OR id IN (
+        SELECT a.id FROM agents a FINAL
+        LEFT JOIN agent_tokens t FINAL ON a.token_id = t.id
+        WHERE a._deleted = 0 AND (t.is_active = 1 OR a.token_id = '' OR t.id IS NULL OR t._deleted = 1)
+    ))"""
+    query += " ORDER BY created_at DESC"
+    rows = _run(query, params=params, fetch=True) or []
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))
     return rows
 
 
 def update_agent_heartbeat(agent_id: str):
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_POSTGRES:
-        _run_pg("UPDATE agents SET last_heartbeat = $1, status = 'active' WHERE id = $2", [now, agent_id])
-    else:
-        _run_sqlite("UPDATE agents SET last_heartbeat = ?, status = 'active' WHERE id = ?", [now, agent_id])
+    agent = get_agent(agent_id)
+    if agent:
+        _upsert_agent(agent_id, agent, updates={"last_heartbeat": _now(), "status": "active"})
 
 
 def update_agent_status(agent_id: str, status: str):
-    if IS_POSTGRES:
-        _run_pg("UPDATE agents SET status = $1 WHERE id = $2", [status, agent_id])
-    else:
-        _run_sqlite("UPDATE agents SET status = ? WHERE id = ?", [status, agent_id])
+    agent = get_agent(agent_id)
+    if agent:
+        _upsert_agent(agent_id, agent, updates={"status": status})
 
 
-# ─── Agent Tokens CRUD ───
-
+# ═══════════════════════════════════════════════════════════
+# Agent Tokens CRUD (ReplacingMergeTree)
+# ═══════════════════════════════════════════════════════════
 
 def create_agent_token(name: str, agent_type: str = "any", cluster_id: str = "default", created_by: str = "") -> dict:
-    """Create a new agent token."""
     import secrets as _sec
     token_id = str(uuid.uuid4())
-    token_value = f"ist_{_sec.token_urlsafe(32)}"  # ist_ prefix = insight token
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO agent_tokens (id, name, token, agent_type, cluster_id, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-            [token_id, name, token_value, agent_type, cluster_id, created_by, now]
-        )
-    else:
-        _run_sqlite(
-            "INSERT INTO agent_tokens (id, name, token, agent_type, cluster_id, created_by, created_at) VALUES (?,?,?,?,?,?,?)",
-            [token_id, name, token_value, agent_type, cluster_id, created_by, now]
-        )
+    token_value = f"ist_{_sec.token_urlsafe(32)}"
+    now = _now()
+    _insert('agent_tokens',
+            ['id', 'name', 'token', 'agent_type', 'cluster_id', 'created_by', 'last_used',
+             'agent_count', 'is_active', '_version', '_deleted', 'created_at'],
+            [[token_id, name, token_value, agent_type, cluster_id, created_by, now, 0, 1, _version(), 0, now]])
     return {"id": token_id, "name": name, "token": token_value, "agent_type": agent_type,
             "cluster_id": cluster_id, "created_by": created_by, "is_active": 1, "agent_count": 0, "created_at": now}
 
 
 def list_agent_tokens() -> list[dict]:
-    """List all agent tokens."""
-    if IS_POSTGRES:
-        rows = db_execute("", "SELECT * FROM agent_tokens ORDER BY created_at DESC", fetch=True) or []
-    else:
-        rows = _run_sqlite("SELECT * FROM agent_tokens ORDER BY created_at DESC", fetch=True) or []
-    # count agents per token
+    rows = _run("SELECT * FROM agent_tokens FINAL WHERE _deleted = 0 ORDER BY created_at DESC", fetch=True) or []
     for r in rows:
-        tid = r["id"]
-        if IS_POSTGRES:
-            cnt = db_execute("", "SELECT COUNT(*) as cnt FROM agents WHERE token_id = $1", params_pg=[tid], fetch=True)
-        else:
-            cnt = _run_sqlite("SELECT COUNT(*) as cnt FROM agents WHERE token_id = ?", [tid], fetch=True)
+        cnt = _run("SELECT count() as cnt FROM agents FINAL WHERE _deleted = 0 AND token_id = {tid:String}",
+                   params={"tid": r["id"]}, fetch=True) or []
         r["agent_count"] = cnt[0]["cnt"] if cnt else 0
     return rows
 
 
 def verify_agent_token(token: str) -> dict | None:
-    """Verify an agent token. Returns token record or None."""
-    if IS_POSTGRES:
-        rows = db_execute("", "SELECT * FROM agent_tokens WHERE token = $1 AND is_active = 1", params_pg=[token], fetch=True)
-    else:
-        rows = _run_sqlite("SELECT * FROM agent_tokens WHERE token = ? AND is_active = 1", [token], fetch=True)
+    rows = _run("SELECT * FROM agent_tokens FINAL WHERE _deleted = 0 AND token = {t:String} AND is_active = 1",
+                params={"t": token}, fetch=True) or []
     if not rows:
         return None
     # Update last_used
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_POSTGRES:
-        _run_pg("UPDATE agent_tokens SET last_used = $1 WHERE id = $2", [now, rows[0]["id"]])
-    else:
-        _run_sqlite("UPDATE agent_tokens SET last_used = ? WHERE id = ?", [now, rows[0]["id"]])
-    return rows[0]
+    rec = rows[0]
+    _insert('agent_tokens',
+            ['id', 'name', 'token', 'agent_type', 'cluster_id', 'created_by', 'last_used',
+             'agent_count', 'is_active', '_version', '_deleted', 'created_at'],
+            [[rec['id'], rec['name'], rec['token'], rec.get('agent_type', 'any'),
+              rec.get('cluster_id', 'default'), rec.get('created_by', ''), _now(),
+              rec.get('agent_count', 0), 1, _version(), 0, rec.get('created_at', _now())]])
+    return rec
 
 
 def revoke_agent_token(token_id: str) -> bool:
-    """Revoke (deactivate) an agent token and remove linked agents."""
-    # Deactivate the token
-    db_execute(
-        "UPDATE agent_tokens SET is_active = 0 WHERE id = ?",
-        "UPDATE agent_tokens SET is_active = 0 WHERE id = $1",
-        params_sqlite=[token_id],
-        params_pg=[token_id]
-    )
-    # Delete all agents linked to this token so they disappear from dashboard
-    db_execute(
-        "DELETE FROM agents WHERE token_id = ?",
-        "DELETE FROM agents WHERE token_id = $1",
-        params_sqlite=[token_id],
-        params_pg=[token_id]
-    )
+    rec = _run("SELECT * FROM agent_tokens FINAL WHERE _deleted = 0 AND id = {tid:String}",
+               params={"tid": token_id}, fetch=True)
+    if rec:
+        rec = rec[0]
+        # Mark token inactive
+        _insert('agent_tokens',
+                ['id', 'name', 'token', 'agent_type', 'cluster_id', 'created_by', 'last_used',
+                 'agent_count', 'is_active', '_version', '_deleted', 'created_at'],
+                [[rec['id'], rec['name'], rec['token'], rec.get('agent_type', 'any'),
+                  rec.get('cluster_id', 'default'), rec.get('created_by', ''), rec.get('last_used', _now()),
+                  rec.get('agent_count', 0), 0, _version(), 0, rec.get('created_at', _now())]])
+    # Mark linked agents as deleted
+    agents = _run("SELECT * FROM agents FINAL WHERE _deleted = 0 AND token_id = {tid:String}",
+                  params={"tid": token_id}, fetch=True) or []
+    for a in agents:
+        _upsert_agent(a['id'], a, updates={"_deleted_flag": True})
+        _insert('agents',
+                ['id', 'name', 'agent_type', 'agent_category', 'hostname', 'cluster_id', 'status',
+                 'labels', 'token_id', 'agent_version', 'os_info', 'ip_address', 'last_heartbeat',
+                 '_version', '_deleted', 'created_at'],
+                [[a['id'], a.get('name', ''), a.get('agent_type', ''), a.get('agent_category', ''),
+                  a.get('hostname', ''), a.get('cluster_id', ''), 'inactive',
+                  json.dumps(a.get('labels', {})) if isinstance(a.get('labels'), dict) else a.get('labels', '{}'),
+                  a.get('token_id', ''), a.get('agent_version', ''), a.get('os_info', ''),
+                  a.get('ip_address', ''), a.get('last_heartbeat', _now()), _version(), 1, a.get('created_at', _now())]])
     return True
 
 
 def get_agents_by_token(token_id: str) -> list[dict]:
-    """Get all agents linked to a token."""
-    if IS_POSTGRES:
-        rows = db_execute("", "SELECT * FROM agents WHERE token_id = $1 ORDER BY created_at DESC", params_pg=[token_id], fetch=True) or []
-    else:
-        rows = _run_sqlite("SELECT * FROM agents WHERE token_id = ? ORDER BY created_at DESC", [token_id], fetch=True) or []
+    rows = _run("SELECT * FROM agents FINAL WHERE _deleted = 0 AND token_id = {tid:String} ORDER BY created_at DESC",
+                params={"tid": token_id}, fetch=True) or []
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))
     return rows
 
 
 def connect_agent(token_record: dict, agent_data: dict) -> dict:
-    """Auto-register or update an agent using a validated token.
-    Called after token is verified. Creates new agent or updates existing one.
-    """
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    now = _now()
     agent_id = agent_data.get("agent_id") or str(uuid.uuid4())
     name = agent_data.get("name", agent_data.get("hostname", "unnamed"))
     agent_type = agent_data.get("agent_type", token_record.get("agent_type", "system"))
@@ -872,112 +484,48 @@ def connect_agent(token_record: dict, agent_data: dict) -> dict:
     ip_address = agent_data.get("ip_address", "")
     token_id = token_record["id"]
 
-    if IS_POSTGRES:
-        _run_pg(
-            """INSERT INTO agents (id, name, agent_type, agent_category, hostname, cluster_id, status, labels,
-                   token_id, agent_version, os_info, ip_address, last_heartbeat, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9,$10,$11,$12,$12)
-               ON CONFLICT (id) DO UPDATE SET name=$2, agent_category=$4, hostname=$5, status='active',
-                   labels=$7, token_id=$8, agent_version=$9, os_info=$10, ip_address=$11, last_heartbeat=$12""",
-            [agent_id, name, agent_type, category, hostname, cluster_id, labels_val,
-             token_id, version, os_info, ip_address, now]
-        )
-    else:
-        _run_sqlite(
-            """INSERT OR REPLACE INTO agents (id, name, agent_type, agent_category, hostname, cluster_id, status, labels,
-                   token_id, agent_version, os_info, ip_address, last_heartbeat, created_at)
-               VALUES (?,?,?,?,?,?,'active',?,?,?,?,?,?,?)""",
-            [agent_id, name, agent_type, category, hostname, cluster_id, labels_val,
-             token_id, version, os_info, ip_address, now, now]
-        )
-
+    _insert('agents',
+            ['id', 'name', 'agent_type', 'agent_category', 'hostname', 'cluster_id', 'status',
+             'labels', 'token_id', 'agent_version', 'os_info', 'ip_address', 'last_heartbeat',
+             '_version', '_deleted', 'created_at'],
+            [[agent_id, name, agent_type, category, hostname, cluster_id, 'active',
+              labels_val, token_id, version, os_info, ip_address, now, _version(), 0, now]])
     return {"id": agent_id, "name": name, "agent_type": agent_type, "agent_category": category,
             "status": "active", "token_id": token_id, "agent_version": version}
 
 
 def migrate_agent_tokens_table():
-    """Migration: add agent_tokens table and new columns to agents if missing."""
-    if IS_POSTGRES:
-        _run_pg("""CREATE TABLE IF NOT EXISTS agent_tokens (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
-            agent_type TEXT DEFAULT 'any', cluster_id TEXT DEFAULT 'default',
-            created_by TEXT DEFAULT '', last_used TIMESTAMPTZ, agent_count INTEGER DEFAULT 0,
-            is_active INTEGER DEFAULT 1, created_at TIMESTAMPTZ DEFAULT NOW())""")
-        for col, default in [("token_id", "''"), ("agent_version", "''"), ("os_info", "''"), ("ip_address", "''")]:
-            try:
-                _run_pg(f"ALTER TABLE agents ADD COLUMN {col} TEXT DEFAULT {default}")
-            except Exception:
-                pass
-    else:
-        _run_sqlite("""CREATE TABLE IF NOT EXISTS agent_tokens (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
-            agent_type TEXT DEFAULT 'any', cluster_id TEXT DEFAULT 'default',
-            created_by TEXT DEFAULT '', last_used TEXT, agent_count INTEGER DEFAULT 0,
-            is_active INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))""")
-        for col in ["token_id", "agent_version", "os_info", "ip_address"]:
-            try:
-                _run_sqlite(f"ALTER TABLE agents ADD COLUMN {col} TEXT DEFAULT ''")
-            except Exception:
-                pass
+    """No-op — tables are created by init-schema.sql on ClickHouse."""
+    pass
 
 
-# ─── Metrics CRUD ───
+# ═══════════════════════════════════════════════════════════
+# Metrics CRUD (MergeTree — time-series)
+# ═══════════════════════════════════════════════════════════
 
 def insert_metrics(agent_id: str, metrics: list[dict]):
-    if IS_CLICKHOUSE:
-        rows = []
-        for m in metrics:
-            ts = m.get("timestamp", datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
-            rows.append([0, agent_id, m.get("metric_name", ""), m.get("metric_value", 0), json.dumps(m.get("labels", {})), ts])
-        _run_ch_insert('metrics', ['id', 'agent_id', 'metric_name', 'metric_value', 'labels', 'timestamp'], rows)
-        return
+    rows = []
     for m in metrics:
-        ts = m.get("timestamp", datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
-        labels_val = json.dumps(m.get("labels", {}))
-        if IS_POSTGRES:
-            _run_pg(
-                "INSERT INTO metrics (agent_id, metric_name, metric_value, labels, timestamp) VALUES ($1, $2, $3, $4, $5)",
-                [agent_id, m.get("metric_name", ""), m.get("metric_value", 0), labels_val, ts]
-            )
-        else:
-            _run_sqlite(
-                "INSERT INTO metrics (agent_id, metric_name, metric_value, labels, timestamp) VALUES (?, ?, ?, ?, ?)",
-                [agent_id, m.get("metric_name", ""), m.get("metric_value", 0), labels_val, ts]
-            )
+        ts = m.get("timestamp", _now())
+        rows.append([0, agent_id, m.get("metric_name", ""), m.get("metric_value", 0),
+                     json.dumps(m.get("labels", {})), ts])
+    _insert('metrics', ['id', 'agent_id', 'metric_name', 'metric_value', 'labels', 'timestamp'], rows)
 
 
-def get_metrics(agent_id: str = None, metric_name: str = None, last_hours: int = 24, limit: int = 1000, from_time: str = None, to_time: str = None) -> list[dict]:
+def get_metrics(agent_id: str = None, metric_name: str = None, last_hours: int = 24,
+                limit: int = 1000, from_time: str = None, to_time: str = None) -> list[dict]:
     cutoff = from_time or (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        query = "SELECT * FROM metrics WHERE timestamp >= {cutoff:String}"
-        params = {"cutoff": cutoff}
-        if to_time:
-            query += " AND timestamp <= {to_time:String}"
-            params["to_time"] = to_time
-        if agent_id:
-            query += " AND agent_id = {agent_id:String}"
-            params["agent_id"] = agent_id
-        if metric_name:
-            query += " AND metric_name = {metric_name:String}"
-            params["metric_name"] = metric_name
-        query += " ORDER BY timestamp DESC LIMIT {lim:UInt32}"
-        params["lim"] = limit
-        rows = _run_clickhouse(query, params=params, fetch=True) or []
-    elif IS_POSTGRES:
-        query = "SELECT * FROM metrics WHERE timestamp >= $1"
-        params = [cutoff]; idx = 2
-        if to_time: query += f" AND timestamp <= ${idx}"; params.append(to_time); idx += 1
-        if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
-        if metric_name: query += f" AND metric_name = ${idx}"; params.append(metric_name); idx += 1
-        query += f" ORDER BY timestamp DESC LIMIT ${idx}"; params.append(limit)
-        rows = db_execute("", query, params_pg=params, fetch=True) or []
-    else:
-        query = "SELECT * FROM metrics WHERE timestamp >= ?"; params = [cutoff]
-        if to_time: query += " AND timestamp <= ?"; params.append(to_time)
-        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
-        if metric_name: query += " AND metric_name = ?"; params.append(metric_name)
-        query += " ORDER BY timestamp DESC LIMIT ?"; params.append(limit)
-        rows = _run_sqlite(query, params, fetch=True) or []
+    query = "SELECT * FROM metrics WHERE timestamp >= {cutoff:String}"
+    params = {"cutoff": cutoff}
+    if to_time:
+        query += " AND timestamp <= {to_time:String}"; params["to_time"] = to_time
+    if agent_id:
+        query += " AND agent_id = {agent_id:String}"; params["agent_id"] = agent_id
+    if metric_name:
+        query += " AND metric_name = {metric_name:String}"; params["metric_name"] = metric_name
+    query += " ORDER BY timestamp DESC LIMIT {lim:UInt32}"
+    params["lim"] = limit
+    rows = _run(query, params=params, fetch=True) or []
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))
     return rows
@@ -992,13 +540,7 @@ def get_latest_metrics_per_agent() -> dict[str, list[dict]]:
                    AND m.metric_name = latest.metric_name
                    AND m.timestamp = latest.max_ts
                ORDER BY m.agent_id, m.metric_name"""
-    if IS_CLICKHOUSE:
-        rows = _run_clickhouse(query, fetch=True) or []
-    elif IS_POSTGRES:
-        rows = db_execute("", query, fetch=True) or []
-    else:
-        rows = _run_sqlite(query, fetch=True) or []
-
+    rows = _run(query, fetch=True) or []
     result: dict[str, list[dict]] = {}
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))
@@ -1010,43 +552,18 @@ def get_latest_metrics_per_agent() -> dict[str, list[dict]]:
 
 
 def get_metrics_timeseries(agent_id: str = None, last_hours: int = 6, metric_names: list[str] = None) -> list[dict]:
-    """Get metrics as time-series data for Recharts."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= {cutoff:String}"
-        params = {"cutoff": cutoff}
-        if agent_id:
-            query += " AND agent_id = {agent_id:String}"
-            params["agent_id"] = agent_id
-        if metric_names:
-            for i, n in enumerate(metric_names):
-                params[f"mn_{i}"] = n
-            placeholders = ", ".join(f"{{mn_{i}:String}}" for i in range(len(metric_names)))
-            query += f" AND metric_name IN ({placeholders})"
-        query += " ORDER BY timestamp ASC"
-        rows = _run_clickhouse(query, params=params, fetch=True) or []
-    elif IS_POSTGRES:
-        query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= $1"
-        params = [cutoff]; idx = 2
-        if agent_id:
-            query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
-        if metric_names:
-            placeholders = ", ".join(f"${idx + i}" for i in range(len(metric_names)))
-            query += f" AND metric_name IN ({placeholders})"
-            params.extend(metric_names)
-        query += " ORDER BY timestamp ASC"
-        rows = db_execute("", query, params_pg=params, fetch=True) or []
-    else:
-        query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= ?"
-        params: list[Any] = [cutoff]
-        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
-        if metric_names:
-            placeholders = ",".join("?" * len(metric_names))
-            query += f" AND metric_name IN ({placeholders})"
-            params.extend(metric_names)
-        query += " ORDER BY timestamp ASC"
-        rows = _run_sqlite(query, params, fetch=True) or []
-
+    query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= {cutoff:String}"
+    params = {"cutoff": cutoff}
+    if agent_id:
+        query += " AND agent_id = {agent_id:String}"; params["agent_id"] = agent_id
+    if metric_names:
+        for i, n in enumerate(metric_names):
+            params[f"mn_{i}"] = n
+        placeholders = ", ".join(f"{{mn_{i}:String}}" for i in range(len(metric_names)))
+        query += f" AND metric_name IN ({placeholders})"
+    query += " ORDER BY timestamp ASC"
+    rows = _run(query, params=params, fetch=True) or []
     time_map: dict[str, dict] = {}
     for r in rows:
         ts = str(r["timestamp"])[:16]
@@ -1056,28 +573,17 @@ def get_metrics_timeseries(agent_id: str = None, last_hours: int = 6, metric_nam
     return list(time_map.values())
 
 
-def get_event_counts_by_hour(last_hours: int = 24) -> list[dict]:
-    """Get event counts grouped by hour and level."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        query = """SELECT formatDateTime(created_at, '%Y-%m-%d %H:00') as hour,
-                          level, count() as count
-                   FROM events WHERE created_at >= {cutoff:String}
-                   GROUP BY hour, level ORDER BY hour ASC"""
-        rows = _run_clickhouse(query, params={"cutoff": cutoff}, fetch=True) or []
-    elif IS_POSTGRES:
-        query = """SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as hour,
-                          level, COUNT(*) as count
-                   FROM events WHERE created_at >= $1
-                   GROUP BY hour, level ORDER BY hour ASC"""
-        rows = db_execute("", query, params_pg=[cutoff], fetch=True) or []
-    else:
-        query = """SELECT strftime('%Y-%m-%d %H:00', created_at) as hour,
-                          level, COUNT(*) as count
-                   FROM events WHERE created_at >= ?
-                   GROUP BY hour, level ORDER BY hour ASC"""
-        rows = _run_sqlite(query, [cutoff], fetch=True) or []
+# ═══════════════════════════════════════════════════════════
+# Events CRUD (MergeTree — time-series)
+# ═══════════════════════════════════════════════════════════
 
+def get_event_counts_by_hour(last_hours: int = 24) -> list[dict]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
+    query = """SELECT formatDateTime(created_at, '%Y-%m-%d %H:00') as hour,
+                      level, count() as count
+               FROM events WHERE created_at >= {cutoff:String}
+               GROUP BY hour, level ORDER BY hour ASC"""
+    rows = _run(query, params={"cutoff": cutoff}, fetch=True) or []
     hour_map: dict[str, dict] = {}
     for r in rows:
         h = r["hour"]
@@ -1087,68 +593,32 @@ def get_event_counts_by_hour(last_hours: int = 24) -> list[dict]:
     return list(hour_map.values())
 
 
-# ─── Events CRUD ───
-
 def insert_events(agent_id: str, events: list[dict]):
-    if IS_CLICKHOUSE:
-        rows = []
-        for e in events:
-            event_id = str(uuid.uuid4())
-            ts = e.get("timestamp", datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
-            rows.append([event_id, agent_id, e.get("level","info"), e.get("title",""), e.get("message",""),
-                         e.get("source",""), e.get("namespace",""), e.get("resource",""), json.dumps(e.get("details", {})), 0, ts])
-        _run_ch_insert('events', ['id','agent_id','level','title','message','source','namespace','resource','details','acknowledged','created_at'], rows)
-        return
+    rows = []
     for e in events:
         event_id = str(uuid.uuid4())
-        ts = e.get("timestamp", datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
-        details_val = json.dumps(e.get("details", {}))
-        if IS_POSTGRES:
-            _run_pg(
-                "INSERT INTO events (id, agent_id, level, title, message, source, namespace, resource, details, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-                [event_id, agent_id, e.get("level","info"), e.get("title",""), e.get("message",""),
-                 e.get("source",""), e.get("namespace",""), e.get("resource",""), details_val, ts]
-            )
-        else:
-            _run_sqlite(
-                "INSERT INTO events (id, agent_id, level, title, message, source, namespace, resource, details, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                [event_id, agent_id, e.get("level","info"), e.get("title",""), e.get("message",""),
-                 e.get("source",""), e.get("namespace",""), e.get("resource",""), details_val, ts]
-            )
+        ts = e.get("timestamp", _now())
+        rows.append([event_id, agent_id, e.get("level", "info"), e.get("title", ""), e.get("message", ""),
+                     e.get("source", ""), e.get("namespace", ""), e.get("resource", ""),
+                     json.dumps(e.get("details", {})), 0, ts])
+    _insert('events', ['id', 'agent_id', 'level', 'title', 'message', 'source', 'namespace',
+                        'resource', 'details', 'acknowledged', 'created_at'], rows)
 
 
-def get_events(agent_id: str = None, level: str = None, last_hours: int = 24, limit: int = 200, from_time: str = None, to_time: str = None) -> list[dict]:
+def get_events(agent_id: str = None, level: str = None, last_hours: int = 24,
+               limit: int = 200, from_time: str = None, to_time: str = None) -> list[dict]:
     cutoff = from_time or (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        query = "SELECT * FROM events WHERE created_at >= {cutoff:String}"
-        params = {"cutoff": cutoff}
-        if to_time:
-            query += " AND created_at <= {to_time:String}"
-            params["to_time"] = to_time
-        if agent_id:
-            query += " AND agent_id = {agent_id:String}"
-            params["agent_id"] = agent_id
-        if level:
-            query += " AND level = {level:String}"
-            params["level"] = level
-        query += " ORDER BY created_at DESC LIMIT {lim:UInt32}"
-        params["lim"] = limit
-        rows = _run_clickhouse(query, params=params, fetch=True) or []
-    elif IS_POSTGRES:
-        query = "SELECT * FROM events WHERE created_at >= $1"
-        params = [cutoff]; idx = 2
-        if to_time: query += f" AND created_at <= ${idx}"; params.append(to_time); idx += 1
-        if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
-        if level: query += f" AND level = ${idx}"; params.append(level); idx += 1
-        query += f" ORDER BY created_at DESC LIMIT ${idx}"; params.append(limit)
-        rows = db_execute("", query, params_pg=params, fetch=True) or []
-    else:
-        query = "SELECT * FROM events WHERE created_at >= ?"; params = [cutoff]
-        if to_time: query += " AND created_at <= ?"; params.append(to_time)
-        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
-        if level: query += " AND level = ?"; params.append(level)
-        query += " ORDER BY created_at DESC LIMIT ?"; params.append(limit)
-        rows = _run_sqlite(query, params, fetch=True) or []
+    query = "SELECT * FROM events WHERE created_at >= {cutoff:String}"
+    params = {"cutoff": cutoff}
+    if to_time:
+        query += " AND created_at <= {to_time:String}"; params["to_time"] = to_time
+    if agent_id:
+        query += " AND agent_id = {agent_id:String}"; params["agent_id"] = agent_id
+    if level:
+        query += " AND level = {level:String}"; params["level"] = level
+    query += " ORDER BY created_at DESC LIMIT {lim:UInt32}"
+    params["lim"] = limit
+    rows = _run(query, params=params, fetch=True) or []
     for r in rows:
         r["details"] = _parse_json_field(r.get("details"))
     return rows
@@ -1156,109 +626,63 @@ def get_events(agent_id: str = None, level: str = None, last_hours: int = 24, li
 
 def get_event_counts(last_hours: int = 24) -> dict[str, int]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        rows = _run_clickhouse("SELECT level, count() as cnt FROM events WHERE created_at >= {cutoff:String} GROUP BY level", params={"cutoff": cutoff}, fetch=True) or []
-    elif IS_POSTGRES:
-        rows = db_execute("", "SELECT level, COUNT(*) as cnt FROM events WHERE created_at >= $1 GROUP BY level",
-                         params_pg=[cutoff], fetch=True) or []
-    else:
-        rows = _run_sqlite("SELECT level, COUNT(*) as cnt FROM events WHERE created_at >= ? GROUP BY level",
-                          [cutoff], fetch=True) or []
+    rows = _run("SELECT level, count() as cnt FROM events WHERE created_at >= {cutoff:String} GROUP BY level",
+                params={"cutoff": cutoff}, fetch=True) or []
     return {r["level"]: r["cnt"] for r in rows}
 
 
 def acknowledge_event(event_id: str):
-    if IS_POSTGRES:
-        _run_pg("UPDATE events SET acknowledged = TRUE WHERE id = $1", [event_id])
-    else:
-        _run_sqlite("UPDATE events SET acknowledged = 1 WHERE id = ?", [event_id])
+    # ClickHouse doesn't support UPDATE — use ALTER TABLE UPDATE for MergeTree
+    _run("ALTER TABLE events UPDATE acknowledged = 1 WHERE id = {eid:String}",
+         params={"eid": event_id})
 
 
-# ─── Logs CRUD ───
+# ═══════════════════════════════════════════════════════════
+# Logs CRUD (MergeTree — time-series)
+# ═══════════════════════════════════════════════════════════
 
 def insert_logs(agent_id: str, logs: list[dict]):
-    if IS_CLICKHOUSE:
-        rows = []
-        for log in logs:
-            ts = log.get("timestamp", datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
-            rows.append([0, agent_id, log.get("namespace",""), log.get("pod_name",""), log.get("container",""),
-                         log.get("log_level","error"), log.get("message",""), ts])
-        _run_ch_insert('logs', ['id','agent_id','namespace','pod_name','container','log_level','message','timestamp'], rows)
-        return
+    rows = []
     for log in logs:
-        ts = log.get("timestamp", datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
-        if IS_POSTGRES:
-            _run_pg(
-                "INSERT INTO logs (agent_id, namespace, pod_name, container, log_level, message, timestamp) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                [agent_id, log.get("namespace",""), log.get("pod_name",""), log.get("container",""),
-                 log.get("log_level","error"), log.get("message",""), ts]
-            )
-        else:
-            _run_sqlite(
-                "INSERT INTO logs (agent_id, namespace, pod_name, container, log_level, message, timestamp) VALUES (?,?,?,?,?,?,?)",
-                [agent_id, log.get("namespace",""), log.get("pod_name",""), log.get("container",""),
-                 log.get("log_level","error"), log.get("message",""), ts]
-            )
+        ts = log.get("timestamp", _now())
+        rows.append([0, agent_id, log.get("namespace", ""), log.get("pod_name", ""),
+                     log.get("container", ""), log.get("log_level", "error"), log.get("message", ""), ts])
+    _insert('logs', ['id', 'agent_id', 'namespace', 'pod_name', 'container', 'log_level', 'message', 'timestamp'], rows)
 
 
-def get_logs(agent_id: str = None, last_hours: int = 24, limit: int = 500, from_time: str = None, to_time: str = None) -> list[dict]:
+def get_logs(agent_id: str = None, last_hours: int = 24, limit: int = 500,
+             from_time: str = None, to_time: str = None) -> list[dict]:
     cutoff = from_time or (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        query = "SELECT * FROM logs WHERE timestamp >= {cutoff:String}"
-        params = {"cutoff": cutoff}
-        if to_time:
-            query += " AND timestamp <= {to_time:String}"
-            params["to_time"] = to_time
-        if agent_id:
-            query += " AND agent_id = {agent_id:String}"
-            params["agent_id"] = agent_id
-        query += " ORDER BY timestamp DESC LIMIT {lim:UInt32}"
-        params["lim"] = limit
-        return _run_clickhouse(query, params=params, fetch=True) or []
-    elif IS_POSTGRES:
-        query = "SELECT * FROM logs WHERE timestamp >= $1"; params = [cutoff]; idx = 2
-        if to_time: query += f" AND timestamp <= ${idx}"; params.append(to_time); idx += 1
-        if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
-        query += f" ORDER BY timestamp DESC LIMIT ${idx}"; params.append(limit)
-        return db_execute("", query, params_pg=params, fetch=True) or []
-    else:
-        query = "SELECT * FROM logs WHERE timestamp >= ?"; params = [cutoff]
-        if to_time: query += " AND timestamp <= ?"; params.append(to_time)
-        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
-        query += " ORDER BY timestamp DESC LIMIT ?"; params.append(limit)
-        return _run_sqlite(query, params, fetch=True) or []
+    query = "SELECT * FROM logs WHERE timestamp >= {cutoff:String}"
+    params = {"cutoff": cutoff}
+    if to_time:
+        query += " AND timestamp <= {to_time:String}"; params["to_time"] = to_time
+    if agent_id:
+        query += " AND agent_id = {agent_id:String}"; params["agent_id"] = agent_id
+    query += " ORDER BY timestamp DESC LIMIT {lim:UInt32}"
+    params["lim"] = limit
+    return _run(query, params=params, fetch=True) or []
 
 
-# ─── Alert Config CRUD ───
+# ═══════════════════════════════════════════════════════════
+# Alert Config CRUD (ReplacingMergeTree)
+# ═══════════════════════════════════════════════════════════
 
 def save_alert_config(channel: str, config: dict, enabled: bool = True, alert_levels: list[str] = None) -> dict:
     config_id = str(uuid.uuid4())
-    config_val = json.dumps(config)
-    levels_val = json.dumps(alert_levels or ["critical", "error"])
-    if IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO alert_configs (id, channel, config, enabled, alert_levels) VALUES ($1,$2,$3,$4,$5)",
-            [config_id, channel, config_val, enabled, levels_val]
-        )
-    else:
-        _run_sqlite(
-            "INSERT INTO alert_configs (id, channel, config, enabled, alert_levels) VALUES (?,?,?,?,?)",
-            [config_id, channel, config_val, 1 if enabled else 0, levels_val]
-        )
+    _insert('alert_configs',
+            ['id', 'channel', 'config', 'enabled', 'alert_levels', '_version', '_deleted', 'created_at'],
+            [[config_id, channel, json.dumps(config), 1 if enabled else 0,
+              json.dumps(alert_levels or ["critical", "error"]), _version(), 0, _now()]])
     return {"id": config_id, "channel": channel, "enabled": enabled}
 
 
 def get_alert_configs(channel: str = None) -> list[dict]:
-    if IS_POSTGRES:
-        if channel:
-            rows = db_execute("", "SELECT * FROM alert_configs WHERE channel = $1", params_pg=[channel], fetch=True) or []
-        else:
-            rows = db_execute("", "SELECT * FROM alert_configs", fetch=True) or []
-    else:
-        if channel:
-            rows = _run_sqlite("SELECT * FROM alert_configs WHERE channel = ?", [channel], fetch=True) or []
-        else:
-            rows = _run_sqlite("SELECT * FROM alert_configs", fetch=True) or []
+    query = "SELECT * FROM alert_configs FINAL WHERE _deleted = 0"
+    params = {}
+    if channel:
+        query += " AND channel = {ch:String}"; params["ch"] = channel
+    rows = _run(query, params=params, fetch=True) or []
     for r in rows:
         r["config"] = _parse_json_field(r.get("config"))
         r["alert_levels"] = _parse_json_field(r.get("alert_levels"), "[]")
@@ -1267,43 +691,37 @@ def get_alert_configs(channel: str = None) -> list[dict]:
 
 
 def delete_alert_config(config_id: str):
-    if IS_POSTGRES:
-        _run_pg("DELETE FROM alert_configs WHERE id = $1", [config_id])
-    else:
-        _run_sqlite("DELETE FROM alert_configs WHERE id = ?", [config_id])
+    rec = _run("SELECT * FROM alert_configs FINAL WHERE _deleted = 0 AND id = {cid:String}",
+               params={"cid": config_id}, fetch=True)
+    if rec:
+        r = rec[0]
+        _insert('alert_configs',
+                ['id', 'channel', 'config', 'enabled', 'alert_levels', '_version', '_deleted', 'created_at'],
+                [[r['id'], r['channel'], r.get('config', '{}'), r.get('enabled', 0),
+                  r.get('alert_levels', '[]'), _version(), 1, r.get('created_at', _now())]])
 
 
-# ─── Notification Rules CRUD ───
+# ═══════════════════════════════════════════════════════════
+# Notification Rules CRUD (ReplacingMergeTree)
+# ═══════════════════════════════════════════════════════════
 
-def save_rule(name: str, metric_name: str, operator: str, threshold: float, duration_minutes: int = 5, channels: list[str] = None) -> dict:
+def save_rule(name: str, metric_name: str, operator: str, threshold: float,
+              duration_minutes: int = 5, channels: list[str] = None) -> dict:
     rule_id = str(uuid.uuid4())
-    channels_val = json.dumps(channels or ["telegram"])
-    if IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO notification_rules (id, name, metric_name, operator, threshold, duration_minutes, channels) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-            [rule_id, name, metric_name, operator, threshold, duration_minutes, channels_val]
-        )
-    else:
-        _run_sqlite(
-            "INSERT INTO notification_rules (id, name, metric_name, operator, threshold, duration_minutes, channels) VALUES (?,?,?,?,?,?,?)",
-            [rule_id, name, metric_name, operator, threshold, duration_minutes, channels_val]
-        )
+    _insert('notification_rules',
+            ['id', 'name', 'metric_name', 'operator', 'threshold', 'duration_minutes',
+             'channels', 'enabled', '_version', '_deleted', 'created_at'],
+            [[rule_id, name, metric_name, operator, threshold, duration_minutes,
+              json.dumps(channels or ["telegram"]), 1, _version(), 0, _now()]])
     return {"id": rule_id, "name": name, "metric_name": metric_name, "operator": operator, "threshold": threshold}
 
 
 def get_rules(enabled_only: bool = False) -> list[dict]:
-    if IS_POSTGRES:
-        q = "SELECT * FROM notification_rules"
-        if enabled_only:
-            q += " WHERE enabled = TRUE"
-        q += " ORDER BY created_at DESC"
-        rows = db_execute("", q, fetch=True) or []
-    else:
-        q = "SELECT * FROM notification_rules"
-        if enabled_only:
-            q += " WHERE enabled = 1"
-        q += " ORDER BY created_at DESC"
-        rows = _run_sqlite(q, fetch=True) or []
+    query = "SELECT * FROM notification_rules FINAL WHERE _deleted = 0"
+    if enabled_only:
+        query += " AND enabled = 1"
+    query += " ORDER BY created_at DESC"
+    rows = _run(query, fetch=True) or []
     for r in rows:
         r["channels"] = _parse_json_field(r.get("channels"), "[]")
         r["enabled"] = bool(r.get("enabled", 0))
@@ -1311,164 +729,106 @@ def get_rules(enabled_only: bool = False) -> list[dict]:
 
 
 def delete_rule(rule_id: str):
-    if IS_POSTGRES:
-        _run_pg("DELETE FROM notification_rules WHERE id = $1", [rule_id])
-    else:
-        _run_sqlite("DELETE FROM notification_rules WHERE id = ?", [rule_id])
+    rec = _run("SELECT * FROM notification_rules FINAL WHERE _deleted = 0 AND id = {rid:String}",
+               params={"rid": rule_id}, fetch=True)
+    if rec:
+        r = rec[0]
+        _insert('notification_rules',
+                ['id', 'name', 'metric_name', 'operator', 'threshold', 'duration_minutes',
+                 'channels', 'enabled', '_version', '_deleted', 'created_at'],
+                [[r['id'], r['name'], r['metric_name'], r['operator'], r['threshold'],
+                  r.get('duration_minutes', 5), r.get('channels', '[]'), r.get('enabled', 0),
+                  _version(), 1, r.get('created_at', _now())]])
 
 
 def toggle_rule(rule_id: str, enabled: bool):
-    if IS_POSTGRES:
-        _run_pg("UPDATE notification_rules SET enabled = $1 WHERE id = $2", [enabled, rule_id])
-    else:
-        _run_sqlite("UPDATE notification_rules SET enabled = ? WHERE id = ?", [1 if enabled else 0, rule_id])
+    rec = _run("SELECT * FROM notification_rules FINAL WHERE _deleted = 0 AND id = {rid:String}",
+               params={"rid": rule_id}, fetch=True)
+    if rec:
+        r = rec[0]
+        _insert('notification_rules',
+                ['id', 'name', 'metric_name', 'operator', 'threshold', 'duration_minutes',
+                 'channels', 'enabled', '_version', '_deleted', 'created_at'],
+                [[r['id'], r['name'], r['metric_name'], r['operator'], r['threshold'],
+                  r.get('duration_minutes', 5), r.get('channels', '[]'), 1 if enabled else 0,
+                  _version(), 0, r.get('created_at', _now())]])
 
 
-# ─── Reports CRUD ───
+# ═══════════════════════════════════════════════════════════
+# Reports CRUD (MergeTree — append-only)
+# ═══════════════════════════════════════════════════════════
 
 def save_report(report_type: str, content: dict, sent_to: list[str] = None) -> dict:
     report_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-    content_val = json.dumps(content)
-    sent_val = json.dumps(sent_to or [])
-    if IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO reports (id, report_type, content, generated_at, sent_to) VALUES ($1,$2,$3,$4,$5)",
-            [report_id, report_type, content_val, now, sent_val]
-        )
-    else:
-        _run_sqlite(
-            "INSERT INTO reports (id, report_type, content, generated_at, sent_to) VALUES (?,?,?,?,?)",
-            [report_id, report_type, content_val, now, sent_val]
-        )
+    now = _now()
+    _insert('reports', ['id', 'report_type', 'content', 'generated_at', 'sent_to'],
+            [[report_id, report_type, json.dumps(content), now, json.dumps(sent_to or [])]])
     return {"id": report_id, "report_type": report_type, "generated_at": now}
 
 
 def get_reports(limit: int = 20) -> list[dict]:
-    if IS_POSTGRES:
-        rows = db_execute("", "SELECT * FROM reports ORDER BY generated_at DESC LIMIT $1",
-                         params_pg=[limit], fetch=True) or []
-    else:
-        rows = _run_sqlite("SELECT * FROM reports ORDER BY generated_at DESC LIMIT ?", [limit], fetch=True) or []
+    rows = _run("SELECT * FROM reports ORDER BY generated_at DESC LIMIT {lim:UInt32}",
+                params={"lim": limit}, fetch=True) or []
     for r in rows:
         r["content"] = _parse_json_field(r.get("content"))
         r["sent_to"] = _parse_json_field(r.get("sent_to"), "[]")
     return rows
 
 
-# ─── Settings CRUD ───
+# ═══════════════════════════════════════════════════════════
+# Settings CRUD (ReplacingMergeTree)
+# ═══════════════════════════════════════════════════════════
 
 def get_setting(key: str, default: Any = None) -> Any:
-    if IS_POSTGRES:
-        row = db_execute("", "SELECT value FROM settings WHERE key = $1", params_pg=[key], fetchone=True)
-    else:
-        row = _run_sqlite("SELECT value FROM settings WHERE key = ?", [key], fetchone=True)
-    if row:
-        return _parse_json_field(row["value"])
+    rows = _run("SELECT value FROM settings FINAL WHERE _deleted = 0 AND key = {k:String}",
+                params={"k": key}, fetch=True) or []
+    if rows:
+        return _parse_json_field(rows[0]["value"])
     return default
 
 
 def set_setting(key: str, value: Any):
-    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     serialized = json.dumps(value) if not isinstance(value, str) else value
-    if IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = $3",
-            [key, serialized, now]
-        )
-    else:
-        _run_sqlite(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
-            [key, serialized, now]
-        )
+    _insert('settings', ['key', 'value', '_version', '_deleted', 'updated_at'],
+            [[key, serialized, _version(), 0, _now()]])
 
 
-# ─── Audit Log CRUD ───
+# ═══════════════════════════════════════════════════════════
+# Audit Log CRUD (MergeTree — time-series)
+# ═══════════════════════════════════════════════════════════
 
-def insert_audit_log(user_id: str = "system", username: str = "system", action: str = "", resource: str = "", details: dict = None, ip: str = ""):
-    details_val = json.dumps(details or {})
-    if IS_CLICKHOUSE:
-        _run_ch_insert('audit_logs', ['id','user_id','username','action','resource','details','ip','timestamp'],
-                       [[0, user_id, username, action, resource, details_val, ip, datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')]])
-    elif IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO audit_logs (user_id, username, action, resource, details, ip) VALUES ($1,$2,$3,$4,$5,$6)",
-            [user_id, username, action, resource, details_val, ip]
-        )
-    else:
-        _run_sqlite(
-            "INSERT INTO audit_logs (user_id, username, action, resource, details, ip) VALUES (?,?,?,?,?,?)",
-            [user_id, username, action, resource, details_val, ip]
-        )
+def insert_audit_log(user_id: str = "system", username: str = "system", action: str = "",
+                     resource: str = "", details: dict = None, ip: str = ""):
+    _insert('audit_logs', ['id', 'user_id', 'username', 'action', 'resource', 'details', 'ip', 'timestamp'],
+            [[0, user_id, username, action, resource, json.dumps(details or {}), ip, _now()]])
 
 
 def get_audit_logs(last_hours: int = 168, limit: int = 100) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        rows = _run_clickhouse("SELECT * FROM audit_logs WHERE timestamp >= {cutoff:String} ORDER BY timestamp DESC LIMIT {lim:UInt32}",
-                               params={"cutoff": cutoff, "lim": limit}, fetch=True) or []
-    elif IS_POSTGRES:
-        rows = db_execute("", "SELECT * FROM audit_logs WHERE timestamp >= $1 ORDER BY timestamp DESC LIMIT $2",
-                         params_pg=[cutoff, limit], fetch=True) or []
-    else:
-        rows = _run_sqlite("SELECT * FROM audit_logs WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
-                          [cutoff, limit], fetch=True) or []
+    rows = _run("SELECT * FROM audit_logs WHERE timestamp >= {cutoff:String} ORDER BY timestamp DESC LIMIT {lim:UInt32}",
+                params={"cutoff": cutoff, "lim": limit}, fetch=True) or []
     for r in rows:
         r["details"] = _parse_json_field(r.get("details"))
     return rows
 
 
-# ─── User Management ───
-
-def list_users() -> list[dict]:
-    if IS_POSTGRES:
-        rows = db_execute("", "SELECT id, username, role, created_at FROM users ORDER BY created_at DESC", fetch=True) or []
-    else:
-        rows = _run_sqlite("SELECT id, username, role, created_at FROM users ORDER BY created_at DESC", fetch=True) or []
-    return rows
-
-
-def update_user_password(user_id: str, new_password_hash: str):
-    if IS_POSTGRES:
-        _run_pg("UPDATE users SET password_hash = $1 WHERE id = $2", [new_password_hash, user_id])
-    else:
-        _run_sqlite("UPDATE users SET password_hash = ? WHERE id = ?", [new_password_hash, user_id])
-
-
-def delete_user(user_id: str):
-    if IS_POSTGRES:
-        _run_pg("DELETE FROM users WHERE id = $1", [user_id])
-    else:
-        _run_sqlite("DELETE FROM users WHERE id = ?", [user_id])
-
-
-# ─── Webhooks CRUD ───
+# ═══════════════════════════════════════════════════════════
+# Webhooks CRUD (ReplacingMergeTree)
+# ═══════════════════════════════════════════════════════════
 
 def save_webhook(name: str, url: str, wh_type: str = "custom", events: list[str] = None) -> dict:
     wh_id = str(uuid.uuid4())
-    events_val = json.dumps(events or ["critical", "error"])
-    if IS_POSTGRES:
-        _run_pg(
-            "INSERT INTO webhooks (id, name, url, type, events) VALUES ($1,$2,$3,$4,$5)",
-            [wh_id, name, url, wh_type, events_val]
-        )
-    else:
-        _run_sqlite(
-            "INSERT INTO webhooks (id, name, url, type, events) VALUES (?,?,?,?,?)",
-            [wh_id, name, url, wh_type, events_val]
-        )
+    _insert('webhooks',
+            ['id', 'name', 'url', 'type', 'events', 'enabled', '_version', '_deleted', 'created_at'],
+            [[wh_id, name, url, wh_type, json.dumps(events or ["critical", "error"]), 1, _version(), 0, _now()]])
     return {"id": wh_id, "name": name, "url": url, "type": wh_type}
 
 
 def get_webhooks(enabled_only: bool = False) -> list[dict]:
-    if IS_POSTGRES:
-        q = "SELECT * FROM webhooks"
-        if enabled_only: q += " WHERE enabled = TRUE"
-        rows = db_execute("", q, fetch=True) or []
-    else:
-        q = "SELECT * FROM webhooks"
-        if enabled_only: q += " WHERE enabled = 1"
-        rows = _run_sqlite(q, fetch=True) or []
+    query = "SELECT * FROM webhooks FINAL WHERE _deleted = 0"
+    if enabled_only:
+        query += " AND enabled = 1"
+    rows = _run(query, fetch=True) or []
     for r in rows:
         r["events"] = _parse_json_field(r.get("events"), "[]")
         r["enabled"] = bool(r.get("enabled", 0))
@@ -1476,155 +836,90 @@ def get_webhooks(enabled_only: bool = False) -> list[dict]:
 
 
 def delete_webhook(wh_id: str):
-    if IS_POSTGRES:
-        _run_pg("DELETE FROM webhooks WHERE id = $1", [wh_id])
-    else:
-        _run_sqlite("DELETE FROM webhooks WHERE id = ?", [wh_id])
+    rec = _run("SELECT * FROM webhooks FINAL WHERE _deleted = 0 AND id = {wid:String}",
+               params={"wid": wh_id}, fetch=True)
+    if rec:
+        r = rec[0]
+        _insert('webhooks',
+                ['id', 'name', 'url', 'type', 'events', 'enabled', '_version', '_deleted', 'created_at'],
+                [[r['id'], r['name'], r['url'], r.get('type', 'custom'), r.get('events', '[]'),
+                  r.get('enabled', 0), _version(), 1, r.get('created_at', _now())]])
 
 
 def toggle_webhook(wh_id: str, enabled: bool):
-    if IS_POSTGRES:
-        _run_pg("UPDATE webhooks SET enabled = $1 WHERE id = $2", [enabled, wh_id])
-    else:
-        _run_sqlite("UPDATE webhooks SET enabled = ? WHERE id = ?", [1 if enabled else 0, wh_id])
+    rec = _run("SELECT * FROM webhooks FINAL WHERE _deleted = 0 AND id = {wid:String}",
+               params={"wid": wh_id}, fetch=True)
+    if rec:
+        r = rec[0]
+        _insert('webhooks',
+                ['id', 'name', 'url', 'type', 'events', 'enabled', '_version', '_deleted', 'created_at'],
+                [[r['id'], r['name'], r['url'], r.get('type', 'custom'), r.get('events', '[]'),
+                  1 if enabled else 0, _version(), 0, r.get('created_at', _now())]])
 
 
-# ─── Process Snapshots ───
+# ═══════════════════════════════════════════════════════════
+# Process Snapshots (MergeTree)
+# ═══════════════════════════════════════════════════════════
 
 def save_process_snapshot(agent_id: str, processes: list[dict]):
-    """Save latest process snapshot for an agent (replace old one)."""
     snapshot_val = json.dumps(processes)
-    if IS_CLICKHOUSE:
-        _run_clickhouse("ALTER TABLE processes DELETE WHERE agent_id = {agent_id:String}", params={"agent_id": agent_id})
-        _run_ch_insert('processes', ['id', 'agent_id', 'snapshot', 'timestamp'],
-                       [[0, agent_id, snapshot_val, datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')]])
-    elif IS_POSTGRES:
-        _run_pg("DELETE FROM processes WHERE agent_id = $1", [agent_id])
-        _run_pg("INSERT INTO processes (agent_id, snapshot) VALUES ($1, $2)", [agent_id, snapshot_val])
-    else:
-        _run_sqlite("DELETE FROM processes WHERE agent_id = ?", [agent_id])
-        _run_sqlite("INSERT INTO processes (agent_id, snapshot) VALUES (?, ?)", [agent_id, snapshot_val])
+    _run("ALTER TABLE processes DELETE WHERE agent_id = {agent_id:String}", params={"agent_id": agent_id})
+    _insert('processes', ['id', 'agent_id', 'snapshot', 'timestamp'],
+            [[0, agent_id, snapshot_val, _now()]])
 
 
 def get_process_snapshot(agent_id: str) -> list[dict]:
-    """Get latest process snapshot for an agent."""
-    if IS_CLICKHOUSE:
-        rows = _run_clickhouse("SELECT snapshot, timestamp FROM processes WHERE agent_id = {agent_id:String} ORDER BY timestamp DESC LIMIT 1",
-                               params={"agent_id": agent_id}, fetch=True) or []
-    elif IS_POSTGRES:
-        rows = db_execute("", "SELECT snapshot, timestamp FROM processes WHERE agent_id = $1 ORDER BY timestamp DESC LIMIT 1",
-                         params_pg=[agent_id], fetch=True) or []
-    else:
-        rows = _run_sqlite("SELECT snapshot, timestamp FROM processes WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 1",
-                          [agent_id], fetch=True) or []
+    rows = _run("SELECT snapshot, timestamp FROM processes WHERE agent_id = {agent_id:String} ORDER BY timestamp DESC LIMIT 1",
+                params={"agent_id": agent_id}, fetch=True) or []
     if rows:
         return {"processes": _parse_json_field(rows[0].get("snapshot"), "[]"), "timestamp": rows[0].get("timestamp")}
     return {"processes": [], "timestamp": None}
 
 
-# ─── Traces ───
+# ═══════════════════════════════════════════════════════════
+# Traces (MergeTree — time-series)
+# ═══════════════════════════════════════════════════════════
 
 def insert_traces(agent_id: str, traces: list[dict]):
-    """Insert OTLP trace spans."""
-    if IS_CLICKHOUSE:
-        rows = []
-        for t in traces:
-            trace_id = t.get("trace_id", str(uuid.uuid4()))
-            span_id = t.get("span_id", str(uuid.uuid4()))
-            rows.append([span_id, agent_id, trace_id, t.get("span_name",""), t.get("service_name",""),
-                         t.get("duration_ms",0), t.get("status","ok"), json.dumps(t.get("attributes", {})),
-                         datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')])
-        _run_ch_insert('traces', ['id','agent_id','trace_id','span_name','service_name','duration_ms','status','attributes','timestamp'], rows)
-        return
+    rows = []
     for t in traces:
         trace_id = t.get("trace_id", str(uuid.uuid4()))
         span_id = t.get("span_id", str(uuid.uuid4()))
-        attrs_val = json.dumps(t.get("attributes", {}))
-        if IS_POSTGRES:
-            _run_pg(
-                "INSERT INTO traces (id, agent_id, trace_id, span_name, service_name, duration_ms, status, attributes) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-                [span_id, agent_id, trace_id, t.get("span_name",""), t.get("service_name",""),
-                 t.get("duration_ms",0), t.get("status","ok"), attrs_val]
-            )
-        else:
-            _run_sqlite(
-                "INSERT INTO traces (id, agent_id, trace_id, span_name, service_name, duration_ms, status, attributes) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                [span_id, agent_id, trace_id, t.get("span_name",""), t.get("service_name",""),
-                 t.get("duration_ms",0), t.get("status","ok"), attrs_val]
-            )
+        rows.append([span_id, agent_id, trace_id, t.get("span_name", ""), t.get("service_name", ""),
+                     t.get("duration_ms", 0), t.get("status", "ok"), json.dumps(t.get("attributes", {})), _now()])
+    _insert('traces', ['id', 'agent_id', 'trace_id', 'span_name', 'service_name',
+                        'duration_ms', 'status', 'attributes', 'timestamp'], rows)
 
 
-def get_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100, from_time: str = None, to_time: str = None) -> list[dict]:
-    """Query traces."""
+def get_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100,
+               from_time: str = None, to_time: str = None) -> list[dict]:
     cutoff = from_time or (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        query = "SELECT * FROM traces WHERE timestamp >= {cutoff:String}"
-        params = {"cutoff": cutoff}
-        if to_time:
-            query += " AND timestamp <= {to_time:String}"
-            params["to_time"] = to_time
-        if agent_id:
-            query += " AND agent_id = {agent_id:String}"
-            params["agent_id"] = agent_id
-        query += " ORDER BY timestamp DESC LIMIT {lim:UInt32}"
-        params["lim"] = limit
-        rows = _run_clickhouse(query, params=params, fetch=True) or []
-    elif IS_POSTGRES:
-        query = "SELECT * FROM traces WHERE timestamp >= $1"
-        params = [cutoff]; idx = 2
-        if to_time: query += f" AND timestamp <= ${idx}"; params.append(to_time); idx += 1
-        if agent_id: query += f" AND agent_id = ${idx}"; params.append(agent_id); idx += 1
-        query += f" ORDER BY timestamp DESC LIMIT ${idx}"; params.append(limit)
-        rows = db_execute("", query, params_pg=params, fetch=True) or []
-    else:
-        query = "SELECT * FROM traces WHERE timestamp >= ?"; params = [cutoff]
-        if to_time: query += " AND timestamp <= ?"; params.append(to_time)
-        if agent_id: query += " AND agent_id = ?"; params.append(agent_id)
-        query += " ORDER BY timestamp DESC LIMIT ?"; params.append(limit)
-        rows = _run_sqlite(query, params, fetch=True) or []
+    query = "SELECT * FROM traces WHERE timestamp >= {cutoff:String}"
+    params = {"cutoff": cutoff}
+    if to_time:
+        query += " AND timestamp <= {to_time:String}"; params["to_time"] = to_time
+    if agent_id:
+        query += " AND agent_id = {agent_id:String}"; params["agent_id"] = agent_id
+    query += " ORDER BY timestamp DESC LIMIT {lim:UInt32}"
+    params["lim"] = limit
+    rows = _run(query, params=params, fetch=True) or []
     for r in rows:
         r["attributes"] = _parse_json_field(r.get("attributes"))
     return rows
 
 
 def get_trace_summary(last_hours: int = 1) -> dict:
-    """Get aggregate trace statistics for the Application Monitoring dashboard."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        rows = _run_clickhouse("""
-            SELECT service_name,
-                   count() as req_count,
-                   avg(duration_ms) as avg_latency,
-                   max(duration_ms) as max_latency,
-                   quantile(0.95)(duration_ms) as p95_latency,
-                   countIf(status = 'error') as error_count
-            FROM traces WHERE timestamp >= {cutoff:String}
-            GROUP BY service_name ORDER BY req_count DESC
-        """, params={"cutoff": cutoff}, fetch=True) or []
-    elif IS_POSTGRES:
-        rows = db_execute("", """
-            SELECT service_name,
-                   COUNT(*) as req_count,
-                   AVG(duration_ms) as avg_latency,
-                   MAX(duration_ms) as max_latency,
-                   PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms) as p95_latency,
-                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
-            FROM traces WHERE timestamp >= $1
-            GROUP BY service_name ORDER BY req_count DESC
-        """, params_pg=[cutoff], fetch=True) or []
-    else:
-        rows = _run_sqlite("""
-            SELECT service_name,
-                   COUNT(*) as req_count,
-                   AVG(duration_ms) as avg_latency,
-                   MAX(duration_ms) as max_latency,
-                   duration_ms as p95_latency,
-                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
-            FROM traces WHERE timestamp >= ?
-            GROUP BY service_name ORDER BY req_count DESC
-        """, [cutoff], fetch=True) or []
+    rows = _run("""
+        SELECT service_name,
+               count() as req_count,
+               avg(duration_ms) as avg_latency,
+               max(duration_ms) as max_latency,
+               quantile(0.95)(duration_ms) as p95_latency,
+               countIf(status = 'error') as error_count
+        FROM traces WHERE timestamp >= {cutoff:String}
+        GROUP BY service_name ORDER BY req_count DESC
+    """, params={"cutoff": cutoff}, fetch=True) or []
 
     total = sum(r.get("req_count", 0) for r in rows)
     total_errors = sum(r.get("error_count", 0) for r in rows)
@@ -1649,14 +944,13 @@ def get_trace_summary(last_hours: int = 1) -> dict:
     }
 
 
-# ─── Storage Stats & Retention ───
+# ═══════════════════════════════════════════════════════════
+# Storage Stats & Retention
+# ═══════════════════════════════════════════════════════════
 
 def get_storage_stats() -> dict:
-    """Get storage statistics for each ClickHouse table."""
-    if not IS_CLICKHOUSE:
-        return {"engine": "sqlite", "tables": [], "message": "Storage stats only available with ClickHouse"}
     try:
-        rows = _run_clickhouse("""
+        rows = _run("""
             SELECT table, formatReadableSize(sum(bytes_on_disk)) as size,
                    sum(rows) as row_count,
                    min(min_date) as oldest_data, max(max_date) as newest_data
@@ -1664,10 +958,8 @@ def get_storage_stats() -> dict:
             WHERE database = 'insight' AND active = 1
             GROUP BY table ORDER BY sum(bytes_on_disk) DESC
         """, fetch=True) or []
-        # Get TTL info
-        ttl_rows = _run_clickhouse("""
-            SELECT name as table, engine,
-                   create_table_query
+        ttl_rows = _run("""
+            SELECT name as table, engine, create_table_query
             FROM system.tables WHERE database = 'insight'
         """, fetch=True) or []
         ttl_map = {}
@@ -1677,26 +969,17 @@ def get_storage_stats() -> dict:
             m = re.search(r'TTL\s+\w+\s*\+\s*(?:toIntervalDay\((\d+)\)|INTERVAL\s+(\d+)\s+DAY)', q, re.IGNORECASE)
             if m:
                 ttl_map[t["table"]] = int(m.group(1) or m.group(2))
-        tables = []
-        for r in rows:
-            tables.append({
-                "name": r["table"],
-                "size": r["size"],
-                "rows": r["row_count"],
-                "oldest": str(r.get("oldest_data", "")),
-                "newest": str(r.get("newest_data", "")),
-                "retention_days": ttl_map.get(r["table"], None),
-            })
+        tables = [{
+            "name": r["table"], "size": r["size"], "rows": r["row_count"],
+            "oldest": str(r.get("oldest_data", "")), "newest": str(r.get("newest_data", "")),
+            "retention_days": ttl_map.get(r["table"], None),
+        } for r in rows]
         return {"engine": "clickhouse", "tables": tables}
     except Exception as e:
         return {"engine": "clickhouse", "tables": [], "error": str(e)}
 
 
 def apply_retention_policies() -> dict:
-    """Apply retention policies from settings to ClickHouse TTL."""
-    if not IS_CLICKHOUSE:
-        return {"status": "skipped", "message": "Retention only available with ClickHouse"}
-    # Read retention settings from SQLite/PG settings table
     retention = {
         "traces": get_setting("retention_traces_days", 7),
         "logs": get_setting("retention_logs_days", 14),
@@ -1713,7 +996,7 @@ def apply_retention_policies() -> dict:
     for table, days in retention.items():
         try:
             col = ts_column[table]
-            _run_clickhouse(f"ALTER TABLE {table} MODIFY TTL {col} + INTERVAL {days} DAY DELETE")
+            _run(f"ALTER TABLE {table} MODIFY TTL {col} + INTERVAL {days} DAY DELETE")
             results[table] = {"days": days, "status": "applied"}
         except Exception as e:
             results[table] = {"days": days, "status": "error", "error": str(e)}
@@ -1721,88 +1004,51 @@ def apply_retention_policies() -> dict:
 
 
 def purge_all_data() -> dict:
-    """Truncate all time-series tables (metrics, logs, traces, events)."""
     tables = ["metrics", "logs", "traces", "events"]
     results = {}
     for table in tables:
         try:
-            if IS_CLICKHOUSE:
-                _run_clickhouse(f"TRUNCATE TABLE {table}")
-            elif IS_POSTGRES:
-                _run_pg(f"DELETE FROM {table}")
-            else:
-                _run_sqlite(f"DELETE FROM {table}")
+            _run(f"TRUNCATE TABLE {table}")
             results[table] = "purged"
         except Exception as e:
             results[table] = f"error: {e}"
     return {"status": "ok", "tables": results}
 
 
-# ─── Service-level queries (v5.0.2) ───
+# ═══════════════════════════════════════════════════════════
+# Service-level queries
+# ═══════════════════════════════════════════════════════════
 
 def get_services(last_hours: int = 24) -> list[dict]:
-    """Get distinct service names from traces."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        rows = _run_clickhouse(
-            "SELECT service_name, count() as req_count, avg(duration_ms) as avg_latency, "
-            "countIf(status = 'error') as error_count, max(timestamp) as last_seen "
-            "FROM traces WHERE timestamp >= {cutoff:String} AND service_name != '' "
-            "GROUP BY service_name ORDER BY req_count DESC",
-            params={"cutoff": cutoff}, fetch=True
-        ) or []
-    elif IS_POSTGRES:
-        rows = db_execute("", """
-            SELECT service_name, COUNT(*) as req_count, AVG(duration_ms) as avg_latency,
-                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count, MAX(timestamp) as last_seen
-            FROM traces WHERE timestamp >= $1 AND service_name != ''
-            GROUP BY service_name ORDER BY req_count DESC
-        """, params_pg=[cutoff], fetch=True) or []
-    else:
-        rows = _run_sqlite("""
-            SELECT service_name, COUNT(*) as req_count, AVG(duration_ms) as avg_latency,
-                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count, MAX(timestamp) as last_seen
-            FROM traces WHERE timestamp >= ? AND service_name != ''
-            GROUP BY service_name ORDER BY req_count DESC
-        """, [cutoff], fetch=True) or []
-    return rows
+    return _run(
+        "SELECT service_name, count() as req_count, avg(duration_ms) as avg_latency, "
+        "countIf(status = 'error') as error_count, max(timestamp) as last_seen "
+        "FROM traces WHERE timestamp >= {cutoff:String} AND service_name != '' "
+        "GROUP BY service_name ORDER BY req_count DESC",
+        params={"cutoff": cutoff}, fetch=True
+    ) or []
 
 
 def get_traces_by_service(service_name: str, last_hours: int = 24, limit: int = 100) -> list[dict]:
-    """Get traces for a specific service."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        rows = _run_clickhouse(
-            "SELECT * FROM traces WHERE service_name = {svc:String} AND timestamp >= {cutoff:String} "
-            "ORDER BY timestamp DESC LIMIT {lim:UInt32}",
-            params={"svc": service_name, "cutoff": cutoff, "lim": limit}, fetch=True
-        ) or []
-    elif IS_POSTGRES:
-        rows = db_execute("", "SELECT * FROM traces WHERE service_name = $1 AND timestamp >= $2 ORDER BY timestamp DESC LIMIT $3",
-                         params_pg=[service_name, cutoff, limit], fetch=True) or []
-    else:
-        rows = _run_sqlite("SELECT * FROM traces WHERE service_name = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
-                          [service_name, cutoff, limit], fetch=True) or []
+    rows = _run(
+        "SELECT * FROM traces WHERE service_name = {svc:String} AND timestamp >= {cutoff:String} "
+        "ORDER BY timestamp DESC LIMIT {lim:UInt32}",
+        params={"svc": service_name, "cutoff": cutoff, "lim": limit}, fetch=True
+    ) or []
     for r in rows:
         r["attributes"] = _parse_json_field(r.get("attributes"))
     return rows
 
 
 def get_metrics_by_service(service_name: str, last_hours: int = 24, limit: int = 500) -> list[dict]:
-    """Get metrics for a specific service (matched via labels containing service_name)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    if IS_CLICKHOUSE:
-        rows = _run_clickhouse(
-            "SELECT * FROM metrics WHERE labels LIKE {pattern:String} AND timestamp >= {cutoff:String} "
-            "ORDER BY timestamp DESC LIMIT {lim:UInt32}",
-            params={"pattern": f"%{service_name}%", "cutoff": cutoff, "lim": limit}, fetch=True
-        ) or []
-    elif IS_POSTGRES:
-        rows = db_execute("", "SELECT * FROM metrics WHERE labels LIKE $1 AND timestamp >= $2 ORDER BY timestamp DESC LIMIT $3",
-                         params_pg=[f"%{service_name}%", cutoff, limit], fetch=True) or []
-    else:
-        rows = _run_sqlite("SELECT * FROM metrics WHERE labels LIKE ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
-                          [f"%{service_name}%", cutoff, limit], fetch=True) or []
+    rows = _run(
+        "SELECT * FROM metrics WHERE labels LIKE {pattern:String} AND timestamp >= {cutoff:String} "
+        "ORDER BY timestamp DESC LIMIT {lim:UInt32}",
+        params={"pattern": f"%{service_name}%", "cutoff": cutoff, "lim": limit}, fetch=True
+    ) or []
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))
     return rows
