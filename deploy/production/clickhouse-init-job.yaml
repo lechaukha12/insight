@@ -1,0 +1,122 @@
+# ClickHouse Schema Init Job
+# Runs once to initialize ClickHouse tables.
+# Safe to re-run (uses CREATE TABLE IF NOT EXISTS).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clickhouse-init-schema
+  namespace: insight-system
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-clickhouse
+          image: clickhouse/clickhouse-server:24.8
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for ClickHouse to be ready..."
+              until clickhouse-client --host=clickhouse --query="SELECT 1" 2>/dev/null; do
+                echo "  ClickHouse not ready, retrying in 3s..."
+                sleep 3
+              done
+              echo "ClickHouse is ready!"
+      containers:
+        - name: init-schema
+          image: clickhouse/clickhouse-server:24.8
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Initializing ClickHouse schema..."
+              clickhouse-client --host=clickhouse --database=insight --multiquery <<'EOF'
+              CREATE TABLE IF NOT EXISTS metrics (
+                  id UInt64,
+                  agent_id String,
+                  metric_name String,
+                  metric_value Float64,
+                  labels String DEFAULT '{}',
+                  timestamp DateTime DEFAULT now()
+              ) ENGINE = MergeTree()
+              PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (agent_id, metric_name, timestamp)
+              TTL timestamp + INTERVAL 30 DAY DELETE
+              SETTINGS index_granularity = 8192;
+
+              CREATE TABLE IF NOT EXISTS events (
+                  id String,
+                  agent_id String,
+                  level String,
+                  title String,
+                  message String DEFAULT '',
+                  source String DEFAULT '',
+                  namespace String DEFAULT '',
+                  resource String DEFAULT '',
+                  details String DEFAULT '{}',
+                  acknowledged UInt8 DEFAULT 0,
+                  created_at DateTime DEFAULT now()
+              ) ENGINE = MergeTree()
+              PARTITION BY toYYYYMMDD(created_at)
+              ORDER BY (agent_id, level, created_at)
+              TTL created_at + INTERVAL 30 DAY DELETE
+              SETTINGS index_granularity = 8192;
+
+              CREATE TABLE IF NOT EXISTS logs (
+                  id UInt64,
+                  agent_id String,
+                  namespace String DEFAULT '',
+                  pod_name String DEFAULT '',
+                  container String DEFAULT '',
+                  log_level String DEFAULT 'error',
+                  message String DEFAULT '',
+                  timestamp DateTime DEFAULT now()
+              ) ENGINE = MergeTree()
+              PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (agent_id, log_level, timestamp)
+              TTL timestamp + INTERVAL 14 DAY DELETE
+              SETTINGS index_granularity = 8192;
+
+              CREATE TABLE IF NOT EXISTS traces (
+                  id String,
+                  agent_id String,
+                  trace_id String DEFAULT '',
+                  span_name String DEFAULT '',
+                  service_name String DEFAULT '',
+                  duration_ms Float64 DEFAULT 0,
+                  status String DEFAULT 'ok',
+                  attributes String DEFAULT '{}',
+                  timestamp DateTime DEFAULT now()
+              ) ENGINE = MergeTree()
+              PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (agent_id, service_name, timestamp)
+              TTL timestamp + INTERVAL 7 DAY DELETE
+              SETTINGS index_granularity = 8192;
+
+              CREATE TABLE IF NOT EXISTS processes (
+                  id UInt64,
+                  agent_id String,
+                  snapshot String DEFAULT '[]',
+                  timestamp DateTime DEFAULT now()
+              ) ENGINE = MergeTree()
+              PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (agent_id, timestamp)
+              TTL timestamp + INTERVAL 3 DAY DELETE
+              SETTINGS index_granularity = 8192;
+
+              CREATE TABLE IF NOT EXISTS audit_logs (
+                  id UInt64,
+                  user_id String DEFAULT 'system',
+                  username String DEFAULT 'system',
+                  action String,
+                  resource String DEFAULT '',
+                  details String DEFAULT '{}',
+                  ip String DEFAULT '',
+                  timestamp DateTime DEFAULT now()
+              ) ENGINE = MergeTree()
+              PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (user_id, timestamp)
+              TTL timestamp + INTERVAL 90 DAY DELETE
+              SETTINGS index_granularity = 8192;
+              EOF
+              echo "Schema initialized successfully!"

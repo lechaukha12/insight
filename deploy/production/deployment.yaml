@@ -1,0 +1,414 @@
+# ════════════════════════════════════════════════════════════════════
+# Insight Monitoring System — Production Deployment
+# Cluster: alfinac-k8s-cluster-1
+# Version: v5.0.6
+# ════════════════════════════════════════════════════════════════════
+
+# ─── Namespace ───
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: insight-system
+  labels:
+    app.kubernetes.io/name: insight
+    app.kubernetes.io/part-of: insight-monitoring
+---
+# ─── ConfigMap ───
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: insight-config
+  namespace: insight-system
+data:
+  PORT: "8080"
+  DATABASE_URL: "/data/insight.db"
+  CORS_ORIGINS: "*"
+  SCAN_INTERVAL: "30"
+  REPORT_TIMEZONE: "Asia/Ho_Chi_Minh"
+---
+# ─── Secrets ───
+apiVersion: v1
+kind: Secret
+metadata:
+  name: insight-secrets
+  namespace: insight-system
+type: Opaque
+stringData:
+  TELEGRAM_BOT_TOKEN: "your-bot-token-here"
+  TELEGRAM_CHAT_ID: "your-chat-id-here"
+  INSIGHT_API_KEY: "insight-secret-key"
+  JWT_SECRET: "change-this-to-a-random-64-char-string-for-production"
+  ADMIN_PASSWORD: "insight2024"
+---
+# ─── PVC: API SQLite data ───
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: insight-data
+  namespace: insight-system
+spec:
+  storageClassName: nfs-client
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+# ─── PVC: ClickHouse data ───
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-data
+  namespace: insight-system
+spec:
+  storageClassName: nfs-client
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+# ─── ClickHouse ConfigMap (init schema) ───
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-init
+  namespace: insight-system
+data:
+  init-schema.sql: |
+    CREATE TABLE IF NOT EXISTS metrics (
+        id UInt64,
+        agent_id String,
+        metric_name String,
+        metric_value Float64,
+        labels String DEFAULT '{}',
+        timestamp DateTime DEFAULT now()
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(timestamp)
+    ORDER BY (agent_id, metric_name, timestamp)
+    TTL timestamp + INTERVAL 30 DAY DELETE
+    SETTINGS index_granularity = 8192;
+
+    CREATE TABLE IF NOT EXISTS events (
+        id String,
+        agent_id String,
+        level String,
+        title String,
+        message String DEFAULT '',
+        source String DEFAULT '',
+        namespace String DEFAULT '',
+        resource String DEFAULT '',
+        details String DEFAULT '{}',
+        acknowledged UInt8 DEFAULT 0,
+        created_at DateTime DEFAULT now()
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(created_at)
+    ORDER BY (agent_id, level, created_at)
+    TTL created_at + INTERVAL 30 DAY DELETE
+    SETTINGS index_granularity = 8192;
+
+    CREATE TABLE IF NOT EXISTS logs (
+        id UInt64,
+        agent_id String,
+        namespace String DEFAULT '',
+        pod_name String DEFAULT '',
+        container String DEFAULT '',
+        log_level String DEFAULT 'error',
+        message String DEFAULT '',
+        timestamp DateTime DEFAULT now()
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(timestamp)
+    ORDER BY (agent_id, log_level, timestamp)
+    TTL timestamp + INTERVAL 14 DAY DELETE
+    SETTINGS index_granularity = 8192;
+
+    CREATE TABLE IF NOT EXISTS traces (
+        id String,
+        agent_id String,
+        trace_id String DEFAULT '',
+        span_name String DEFAULT '',
+        service_name String DEFAULT '',
+        duration_ms Float64 DEFAULT 0,
+        status String DEFAULT 'ok',
+        attributes String DEFAULT '{}',
+        timestamp DateTime DEFAULT now()
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(timestamp)
+    ORDER BY (agent_id, service_name, timestamp)
+    TTL timestamp + INTERVAL 7 DAY DELETE
+    SETTINGS index_granularity = 8192;
+
+    CREATE TABLE IF NOT EXISTS processes (
+        id UInt64,
+        agent_id String,
+        snapshot String DEFAULT '[]',
+        timestamp DateTime DEFAULT now()
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(timestamp)
+    ORDER BY (agent_id, timestamp)
+    TTL timestamp + INTERVAL 3 DAY DELETE
+    SETTINGS index_granularity = 8192;
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id UInt64,
+        user_id String DEFAULT 'system',
+        username String DEFAULT 'system',
+        action String,
+        resource String DEFAULT '',
+        details String DEFAULT '{}',
+        ip String DEFAULT '',
+        timestamp DateTime DEFAULT now()
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMMDD(timestamp)
+    ORDER BY (user_id, timestamp)
+    TTL timestamp + INTERVAL 90 DAY DELETE
+    SETTINGS index_granularity = 8192;
+---
+# ─── ClickHouse StatefulSet ───
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  namespace: insight-system
+  labels:
+    app: clickhouse
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24.8
+          ports:
+            - containerPort: 8123
+              name: http
+            - containerPort: 9000
+              name: native
+          env:
+            - name: CLICKHOUSE_DB
+              value: insight
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: clickhouse-data
+        - name: init-scripts
+          configMap:
+            name: clickhouse-init
+---
+# ─── ClickHouse Service ───
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: insight-system
+spec:
+  selector:
+    app: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: 8123
+    - name: native
+      port: 9000
+      targetPort: 9000
+  type: ClusterIP
+---
+# ─── API RBAC: ServiceAccount + ClusterRole ───
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: insight-api-sa
+  namespace: insight-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: insight-api-k8s-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "pods", "services", "configmaps", "secrets",
+                "persistentvolumes", "persistentvolumeclaims", "events", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: insight-api-k8s-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: insight-api-sa
+    namespace: insight-system
+roleRef:
+  kind: ClusterRole
+  name: insight-api-k8s-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# ─── API Gateway Deployment ───
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insight-api
+  namespace: insight-system
+  labels:
+    app: insight-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: insight-api
+  template:
+    metadata:
+      labels:
+        app: insight-api
+    spec:
+      serviceAccountName: insight-api-sa
+      containers:
+        - name: api-gateway
+          image: lechaukha12/insight-api:v5.0.6
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: insight-config
+            - secretRef:
+                name: insight-secrets
+          env:
+            - name: CLICKHOUSE_URL
+              value: "http://clickhouse:8123"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: insight-data
+---
+# ─── API Service ───
+apiVersion: v1
+kind: Service
+metadata:
+  name: insight-api
+  namespace: insight-system
+spec:
+  selector:
+    app: insight-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+# ─── Dashboard Deployment ───
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insight-dashboard
+  namespace: insight-system
+  labels:
+    app: insight-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: insight-dashboard
+  template:
+    metadata:
+      labels:
+        app: insight-dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: lechaukha12/insight-dashboard:v5.0.6
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: BACKEND_URL
+              value: "http://insight-api:8080"
+            - name: NEXT_PUBLIC_API_URL
+              value: "http://insight-api:8080"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+# ─── Dashboard Service ───
+apiVersion: v1
+kind: Service
+metadata:
+  name: insight-dashboard
+  namespace: insight-system
+spec:
+  selector:
+    app: insight-dashboard
+  ports:
+    - port: 3000
+      targetPort: 3000
+  type: ClusterIP

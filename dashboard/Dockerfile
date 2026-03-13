@@ -1,4 +1,5 @@
-FROM node:20-alpine AS builder
+# ── Stage 1: Build (runs on native platform = arm64 on Mac, fast!) ──
+FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -8,7 +9,8 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine AS runner
+# ── Stage 2: Runner (target platform = linux/amd64 for production) ──
+FROM --platform=$TARGETPLATFORM node:20-alpine AS runner
 
 WORKDIR /app
 
