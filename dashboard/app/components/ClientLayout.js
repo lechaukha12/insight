@@ -29,12 +29,12 @@ function AppShell({ children }) {
         return <>{children}</>;
     }
 
-    // Authenticated: show sidebar + time picker + content
+    // Authenticated: show sidebar + content with time picker overlay in header
     return (
         <div className="app-layout">
             <Sidebar />
             <main className="main-content">
-                <div className="time-picker-bar">
+                <div className="trp-overlay">
                     <TimeRangePicker />
                 </div>
                 {children}

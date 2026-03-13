@@ -218,29 +218,27 @@ a {
   flex-direction: column;
 }
 
-.time-picker-bar {
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  padding: 5px 24px;
-  background: var(--bg-surface, rgba(255, 243, 180, 0.92));
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
+/* TimeRangePicker floats inside the main-header */
+.trp-overlay {
+  position: fixed;
+  top: 12px;
+  right: 28px;
+  z-index: 300;
+  pointer-events: auto;
 }
 
 .main-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 32px;
+  padding: 14px 32px;
+  padding-right: 320px; /* leave room for trp-overlay */
   background: var(--bg-surface);
   backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--border-color);
   position: sticky;
   top: 0;
-  z-index: 50;
+  z-index: 200;
 }
 
 .main-header h2 {

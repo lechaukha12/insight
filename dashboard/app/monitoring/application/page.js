@@ -62,16 +62,6 @@ export default function ApplicationMonitoringPage() {
             {/* Header */}
             <div className="main-header">
                 <h2>Application Monitoring</h2>
-                <div className="header-actions">
-                    <select className="form-input" value={lastHours} onChange={e => { setLastHours(Number(e.target.value)); setLoading(true); }}
-                        style={{ width: 160, padding: '8px 14px', fontSize: 13 }}>
-                        <option value={1}>Last 1 hour</option>
-                        <option value={6}>Last 6 hours</option>
-                        <option value={24}>Last 24 hours</option>
-                        <option value={72}>Last 3 days</option>
-                        <option value={168}>Last 7 days</option>
-                    </select>
-                </div>
             </div>
 
             {/* Body */}
