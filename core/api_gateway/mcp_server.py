@@ -379,103 +379,183 @@ def get_webhooks_summary() -> list[dict]:
 
 # ═══════════════════════════════════════════════════════════
 # MCP Server — orchestrates Gemini + tools
+# Token optimization: cache + smart routing + compression
 # ═══════════════════════════════════════════════════════════
 
+import re
+import time
+import os
+
 MCP_TOOLS = [
-    # Agents & Metrics
-    get_system_agents,
-    get_agent_detail,
-    get_system_metrics,
-    get_process_list,
-    # Events
-    get_recent_events,
-    get_event_counts,
-    get_event_timeline,
-    # Logs (stats only)
-    get_log_stats,
-    get_error_logs,
-    # Traces & Services
-    get_trace_overview,
-    get_application_services,
-    # Infrastructure
-    get_clusters,
-    get_storage_info,
-    # Configuration
-    get_notification_rules,
-    get_alert_channels,
-    get_webhooks_summary,
+    get_system_agents, get_agent_detail, get_system_metrics, get_process_list,
+    get_recent_events, get_event_counts, get_event_timeline,
+    get_log_stats, get_error_logs,
+    get_trace_overview, get_application_services,
+    get_clusters, get_storage_info,
+    get_notification_rules, get_alert_channels, get_webhooks_summary,
 ]
 
-# Tools to auto-call for context gathering (lightweight ones only)
-CONTEXT_TOOLS = [
-    get_system_agents,
-    get_system_metrics,
-    get_event_counts,
-    get_recent_events,
-    get_log_stats,
-    get_error_logs,
-    get_trace_overview,
-    get_application_services,
-    get_clusters,
-    get_notification_rules,
-    get_alert_channels,
-    get_webhooks_summary,
-    get_storage_info,
-]
+# ─── Tool Groups for Smart Context Routing ───
+# Maps keyword patterns → which tools to call
+TOOL_ROUTING = {
+    "core": [get_system_agents, get_system_metrics, get_event_counts],
+    "agent": [get_system_agents, get_agent_detail, get_system_metrics],
+    "metric": [get_system_metrics, get_system_agents],
+    "cpu|ram|memory|disk|resource": [get_system_metrics, get_process_list],
+    "event|alert|cảnh báo|sự cố|lỗi|error|critical": [get_event_counts, get_recent_events],
+    "log": [get_log_stats, get_error_logs],
+    "trace|tracing|latency|độ trễ|span": [get_trace_overview, get_application_services],
+    "service|ứng dụng|app": [get_application_services, get_trace_overview],
+    "cluster|cụm": [get_clusters],
+    "storage|lưu trữ|dung lượng|database": [get_storage_info],
+    "rule|notification|thông báo|quy tắc": [get_notification_rules, get_alert_channels],
+    "webhook": [get_webhooks_summary],
+    "process|tiến trình": [get_process_list],
+    "overview": [
+        get_system_agents, get_system_metrics, get_event_counts, get_recent_events,
+        get_trace_overview, get_application_services,
+    ],
+}
+
+# ─── In-Memory Cache (TTL-based) ───
+_tool_cache: dict[str, tuple[float, any]] = {}
+CACHE_TTL = int(os.getenv("MCP_CACHE_TTL", "60"))
+
+
+def _cache_key(fn_name: str, *args, **kwargs) -> str:
+    return f"{fn_name}:{json.dumps(args, default=str)}:{json.dumps(kwargs, default=str, sort_keys=True)}"
+
+
+def _cached_call(fn, *args, **kwargs):
+    """Call a tool function with TTL cache."""
+    key = _cache_key(fn.__name__, *args, **kwargs)
+    now = time.time()
+    if key in _tool_cache:
+        ts, data = _tool_cache[key]
+        if now - ts < CACHE_TTL:
+            logger.debug(f"Cache HIT: {fn.__name__}")
+            return data, True
+    data = fn(*args, **kwargs)
+    _tool_cache[key] = (now, data)
+    # Evict old entries
+    cutoff = now - CACHE_TTL * 2
+    for k in list(_tool_cache):
+        if _tool_cache[k][0] < cutoff:
+            del _tool_cache[k]
+    return data, False
+
+
+def _select_tools(user_message: str) -> list:
+    """Smart routing: select tools based on user message keywords."""
+    msg_lower = user_message.lower()
+    selected = set()
+
+    # Always include core tools
+    for fn in TOOL_ROUTING["core"]:
+        selected.add(fn.__name__)
+
+    # Match keyword patterns
+    for pattern, tools in TOOL_ROUTING.items():
+        if pattern == "core":
+            continue
+        keywords = pattern.split("|")
+        if any(kw in msg_lower for kw in keywords):
+            for fn in tools:
+                selected.add(fn.__name__)
+
+    # If nothing specific matched, include overview set
+    if len(selected) <= 3:
+        for fn in TOOL_ROUTING.get("overview", []):
+            selected.add(fn.__name__)
+
+    fn_map = {fn.__name__: fn for fn in MCP_TOOLS}
+    return [fn_map[name] for name in selected if name in fn_map]
+
+
+def _compress_data(data, max_chars: int = 1500) -> str:
+    """Compress tool output to reduce tokens."""
+    text = json.dumps(data, ensure_ascii=False, default=str)
+    if len(text) <= max_chars:
+        return text
+    if isinstance(data, list) and len(data) > 5:
+        data = data[:5]
+        text = json.dumps(data, ensure_ascii=False, default=str)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "...]"
+    return text
+
 
 SYSTEM_PROMPT = """Bạn là Insight AI Assistant — trợ lý giám sát hệ thống thông minh.
-Dữ liệu monitoring realtime được cung cấp bên dưới qua MCP Server (16 tools).
+Dữ liệu monitoring realtime được cung cấp bên dưới qua MCP Server.
 Trả lời câu hỏi của admin bằng tiếng Việt.
 Nếu phát hiện vấn đề, hãy đề xuất giải pháp cụ thể.
 Trả lời ngắn gọn, chuyên nghiệp, sử dụng markdown formatting.
-Đừng lặp lại toàn bộ dữ liệu thô — chỉ trích dẫn phần liên quan.
-Nếu user hỏi chung chung về hệ thống, hãy tổng hợp từ nhiều nguồn dữ liệu.
-Các tool có sẵn: agents, metrics, events, logs (stats), traces, services, clusters, storage, rules, alerts, webhooks, processes."""
+Đừng lặp lại toàn bộ dữ liệu thô — chỉ trích dẫn phần liên quan."""
 
 
 async def chat(api_key: str, model_name: str, user_message: str, history: list[dict] = None) -> str:
-    """Process a chat message using Gemini with MCP tools (context-gathering approach)."""
+    """Process a chat message using Gemini with optimized MCP tools.
+
+    Optimizations:
+    1. Smart routing: only calls tools relevant to the question
+    2. TTL cache: reuses tool results within 60s window
+    3. Data compression: limits JSON payload size
+    """
     client = genai.Client(api_key=api_key)
 
-    # Build conversation contents
+    # Build conversation contents (limit history to last 6 to save tokens)
     contents = []
-    for h in (history or [])[-10:]:
+    for h in (history or [])[-6:]:
         role = h.get("role", "user")
+        text = h.get("content", "")
+        if len(text) > 500:
+            text = text[:500] + "..."
         contents.append(types.Content(
             role=role,
-            parts=[types.Part.from_text(text=h.get("content", ""))]
+            parts=[types.Part.from_text(text=text)]
         ))
     contents.append(types.Content(
         role="user",
         parts=[types.Part.from_text(text=user_message)]
     ))
 
-    # Gather monitoring context via MCP tools
+    # Smart routing: select relevant tools only
+    selected_tools = _select_tools(user_message)
+    logger.info(f"Smart routing: {len(selected_tools)}/{len(MCP_TOOLS)} tools for '{user_message[:50]}'")
+
+    # Gather context with caching
     context_parts = []
-    for fn in CONTEXT_TOOLS:
+    cache_hits = 0
+    for fn in selected_tools:
         try:
             if fn.__name__ == "get_recent_events":
-                data = fn(severity="", limit=10)
+                data, cached = _cached_call(fn, severity="", limit=8)
             elif fn.__name__ == "get_error_logs":
-                data = fn(limit=10)
+                data, cached = _cached_call(fn, limit=8)
             elif fn.__name__ == "get_trace_overview":
-                data = fn(last_hours=24)
+                data, cached = _cached_call(fn, last_hours=24)
             elif fn.__name__ == "get_event_timeline":
-                data = fn(last_hours=24)
+                data, cached = _cached_call(fn, last_hours=24)
             else:
-                data = fn()
-            context_parts.append(f"[{fn.__name__}]: {json.dumps(data, ensure_ascii=False, default=str)[:2000]}")
-            logger.info(f"MCP tool executed: {fn.__name__}")
+                data, cached = _cached_call(fn)
+
+            if cached:
+                cache_hits += 1
+
+            compressed = _compress_data(data)
+            context_parts.append(f"[{fn.__name__}]: {compressed}")
         except Exception as e:
             logger.warning(f"MCP tool {fn.__name__} failed: {e}")
-            context_parts.append(f"[{fn.__name__}]: error - {e}")
+
+    total_chars = sum(len(p) for p in context_parts)
+    logger.info(f"Context: {len(selected_tools)} tools, {cache_hits} cache hits, {total_chars} chars")
 
     monitoring_context = "\n".join(context_parts)
 
     config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT + "\n\nMONITORING DATA (via MCP Server):\n" + monitoring_context,
+        system_instruction=SYSTEM_PROMPT + "\n\nMONITORING DATA:\n" + monitoring_context,
         temperature=0.7,
-        max_output_tokens=2048,
+        max_output_tokens=1500,
     )
 
     response = client.models.generate_content(
@@ -485,3 +565,4 @@ async def chat(api_key: str, model_name: str, user_message: str, history: list[d
     )
 
     return response.text or "Không thể xử lý yêu cầu."
+
