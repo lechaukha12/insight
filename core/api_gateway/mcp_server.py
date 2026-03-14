@@ -158,25 +158,16 @@ Nếu user hỏi chung chung về hệ thống, hãy gọi nhiều tools để c
 
 
 async def chat(api_key: str, model_name: str, user_message: str, history: list[dict] = None) -> str:
-    """Process a chat message using Gemini with MCP tools (function calling).
-    
-    Args:
-        api_key: Gemini API key
-        model_name: Gemini model to use
-        user_message: The user's message
-        history: Previous conversation history
-    
-    Returns:
-        The AI assistant's response text
-    """
+    """Process a chat message using Gemini with MCP tools (manual function calling)."""
     client = genai.Client(api_key=api_key)
+
+    # Map tool names to functions
+    tool_map = {fn.__name__: fn for fn in MCP_TOOLS}
 
     # Build conversation contents
     contents = []
     for h in (history or [])[-10:]:
         role = h.get("role", "user")
-        if role == "model":
-            role = "model"
         contents.append(types.Content(
             role=role,
             parts=[types.Part.from_text(text=h.get("content", ""))]
@@ -186,22 +177,64 @@ async def chat(api_key: str, model_name: str, user_message: str, history: list[d
         parts=[types.Part.from_text(text=user_message)]
     ))
 
-    # Configure with tools for function calling
+    # Config with tools but NO automatic function calling
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT,
         tools=MCP_TOOLS,
         temperature=0.7,
         max_output_tokens=2048,
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(
-            disable=False,
-            maximum_remote_calls=5,
-        ),
     )
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=contents,
-        config=config,
-    )
+    # Manual function calling loop (max 5 rounds)
+    for _ in range(5):
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
+
+        # Check if model wants to call functions
+        function_calls = []
+        if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.function_call:
+                    function_calls.append(part)
+
+        if not function_calls:
+            # No function calls — return text response
+            return response.text or "Không thể xử lý yêu cầu."
+
+        # Add model's response (with function calls) to contents
+        contents.append(response.candidates[0].content)
+
+        # Execute each function call and build response parts
+        function_response_parts = []
+        for fc_part in function_calls:
+            fn_name = fc_part.function_call.name
+            fn_args = dict(fc_part.function_call.args) if fc_part.function_call.args else {}
+
+            logger.info(f"MCP tool call: {fn_name}({fn_args})")
+
+            if fn_name in tool_map:
+                try:
+                    result = tool_map[fn_name](**fn_args)
+                except Exception as e:
+                    result = {"error": str(e)}
+            else:
+                result = {"error": f"Unknown tool: {fn_name}"}
+
+            function_response_parts.append(
+                types.Part.from_function_response(
+                    name=fn_name,
+                    response={"result": result},
+                )
+            )
+
+        # Add function responses to contents
+        contents.append(types.Content(
+            role="user",
+            parts=function_response_parts,
+        ))
 
     return response.text or "Không thể xử lý yêu cầu."
+
