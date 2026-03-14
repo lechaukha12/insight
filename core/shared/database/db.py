@@ -8,7 +8,7 @@ import json
 import os
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, date, timedelta, timezone
 from typing import Any
 
 CLICKHOUSE_URL = os.getenv("CLICKHOUSE_URL", "http://localhost:8123")
@@ -869,8 +869,12 @@ def toggle_rule(rule_id: str, enabled: bool):
 def save_report(report_type: str, content: dict, sent_to: list[str] = None) -> dict:
     report_id = str(uuid.uuid4())
     now = _now()
+    def _json_default(o):
+        if isinstance(o, (datetime, date)):
+            return o.isoformat()
+        raise TypeError(f'Object of type {o.__class__.__name__} is not JSON serializable')
     _insert('reports', ['id', 'report_type', 'content', 'generated_at', 'sent_to'],
-            [[report_id, report_type, json.dumps(content), now, json.dumps(sent_to or [])]])
+            [[report_id, report_type, json.dumps(content, default=_json_default), now, json.dumps(sent_to or [])]])
     return {"id": report_id, "report_type": report_type, "generated_at": now}
 
 

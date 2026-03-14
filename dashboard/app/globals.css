@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════
-   INSIGHT MONITORING SYSTEM v2.1 - NAM A BANK THEME
+   INSIGHT MONITORING SYSTEM v6.0.1 - NAM A BANK THEME
    Primary: #ffe303 (Gold)  |  Accent: #0165a7 (Blue)
    Warm golden backgrounds matching ops.namabank.com.vn
    ═══════════════════════════════════════════════════════ */
@@ -24,6 +24,7 @@
   --bg-sidebar: rgba(255, 240, 160, 0.96);
   --bg-input: rgba(255, 248, 200, 0.8);
   --bg-overlay: rgba(0, 0, 0, 0.2);
+  --bg-secondary: rgba(255, 248, 200, 0.6);
 
   /* Text on gold backgrounds */
   --text-primary: #1a1a1a;
@@ -433,7 +434,7 @@ a {
   padding: 14px 16px;
   font-size: 14px;
   color: var(--text-secondary);
-  border-bottom: 1px solid rgba(201, 177, 0, 0.1);
+  border-bottom: 1px solid var(--border-color);
   vertical-align: middle;
 }
 
@@ -597,7 +598,7 @@ a {
   align-items: flex-start;
   gap: 14px;
   padding: 16px 20px;
-  border-bottom: 1px solid rgba(201, 177, 0, 0.1);
+  border-bottom: 1px solid var(--border-color);
   transition: var(--transition-fast);
 }
 
