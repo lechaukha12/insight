@@ -74,6 +74,43 @@ kind: Namespace
 metadata:
   name: insight-system
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: insight-k8s-agent
+  namespace: insight-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: insight-k8s-agent
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods", "services", "namespaces", "events", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: insight-k8s-agent
+subjects:
+- kind: ServiceAccount
+  name: insight-k8s-agent
+  namespace: insight-system
+roleRef:
+  kind: ClusterRole
+  name: insight-k8s-agent
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
