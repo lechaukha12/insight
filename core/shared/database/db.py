@@ -364,14 +364,23 @@ def list_agents(cluster_id: str = None, from_time: str = None, to_time: str = No
     if to_time:
         query += " AND last_heartbeat <= {tt:String}"
         params["tt"] = to_time
-    # Exclude agents whose token has been revoked
-    query += """ AND (token_id = '' OR id IN (
-        SELECT a.id FROM agents a FINAL
-        LEFT JOIN agent_tokens t FINAL ON a.token_id = t.id
-        WHERE a._deleted = 0 AND (t.is_active = 1 OR a.token_id = '' OR t.id IS NULL OR t._deleted = 1)
-    ))"""
     query += " ORDER BY created_at DESC"
     rows = _run(query, params=params, fetch=True) or []
+
+    # Filter out agents with revoked tokens (in Python, avoids expensive subquery)
+    if rows:
+        token_ids = list({r.get('token_id', '') for r in rows if r.get('token_id', '')})
+        revoked = set()
+        if token_ids:
+            for i, tid in enumerate(token_ids):
+                params[f"t{i}"] = tid
+            placeholders = ", ".join(f"{{t{i}:String}}" for i in range(len(token_ids)))
+            inactive = _run(f"SELECT id FROM agent_tokens FINAL WHERE id IN ({placeholders}) AND (is_active = 0 OR _deleted = 1)",
+                           params=params, fetch=True) or []
+            revoked = {r['id'] for r in inactive}
+        if revoked:
+            rows = [r for r in rows if r.get('token_id', '') not in revoked]
+
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))
     return rows
@@ -408,10 +417,13 @@ def create_agent_token(name: str, agent_type: str = "any", cluster_id: str = "de
 
 def list_agent_tokens() -> list[dict]:
     rows = _run("SELECT * FROM agent_tokens FINAL WHERE _deleted = 0 ORDER BY created_at DESC", fetch=True) or []
-    for r in rows:
-        cnt = _run("SELECT count() as cnt FROM agents FINAL WHERE _deleted = 0 AND token_id = {tid:String}",
-                   params={"tid": r["id"]}, fetch=True) or []
-        r["agent_count"] = cnt[0]["cnt"] if cnt else 0
+    if rows:
+        # Batch count agents per token (single query instead of N+1)
+        counts = _run("SELECT token_id, count() as cnt FROM agents FINAL WHERE _deleted = 0 AND token_id != '' GROUP BY token_id",
+                      fetch=True) or []
+        count_map = {r["token_id"]: r["cnt"] for r in counts}
+        for r in rows:
+            r["agent_count"] = count_map.get(r["id"], 0)
     return rows
 
 

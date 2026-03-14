@@ -5,6 +5,7 @@ Security: API key auth, CORS restriction, rate limiting, request size limit.
 """
 
 import asyncio
+import time as _time
 import json
 import logging
 import os
@@ -102,6 +103,17 @@ async def require_agent_token(request: Request):
 
 # Keep backward compat alias
 require_api_key = require_agent_token
+
+# ─── Response time logging middleware ───
+@app.middleware("http")
+async def log_response_time(request: Request, call_next):
+    start = _time.monotonic()
+    response = await call_next(request)
+    elapsed_ms = round((_time.monotonic() - start) * 1000, 1)
+    path = request.url.path
+    if path != "/health":
+        print(f"[PERF] {request.method} {path} => {response.status_code} ({elapsed_ms}ms)", flush=True)
+    return response
 
 # ─── Request size limit middleware (10MB) ───
 @app.middleware("http")
@@ -495,7 +507,8 @@ async def remove_alert_setting(config_id: str, user: dict = Depends(require_role
 
 @app.get("/api/v1/webhooks")
 async def list_all_webhooks():
-    return {"webhooks": get_webhooks(), "total": len(get_webhooks())}
+    wh = get_webhooks()
+    return {"webhooks": wh, "total": len(wh)}
 
 @app.post("/api/v1/webhooks")
 async def create_webhook(request: Request, user: dict = Depends(require_role(["admin","operator"]))):
