@@ -132,12 +132,12 @@ export default function SystemMonitoringPage() {
                     <div className="grid-2">
                         {filtered.map(agent => {
                             const status = getStatus(agent);
-                            const cpu = getMetricValue(agent, 'cpu_usage_percent');
-                            const mem = getMetricValue(agent, 'memory_usage_percent');
-                            const diskUsed = getMetricValue(agent, 'disk_usage_percent');
+                            const cpu = getMetricValue(agent, 'cpu_percent');
+                            const mem = getMetricValue(agent, 'memory_percent');
+                            const diskUsed = getMetricValue(agent, 'disk_percent');
                             const netSent = getMetricValue(agent, 'network_bytes_sent');
                             const netRecv = getMetricValue(agent, 'network_bytes_recv');
-                            const uptime = getMetricValue(agent, 'system_uptime_seconds');
+                            const uptime = getMetricValue(agent, 'uptime_seconds');
 
                             return (
                                 <div key={agent.id} className="card" style={{ cursor: 'pointer' }}
