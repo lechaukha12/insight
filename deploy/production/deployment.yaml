@@ -46,7 +46,7 @@ metadata:
   name: clickhouse-data
   namespace: insight-system
 spec:
-  storageClassName: nfs-client
+  storageClassName: local-path
   accessModes:
     - ReadWriteOnce
   resources:
