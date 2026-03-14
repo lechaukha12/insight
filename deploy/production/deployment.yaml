@@ -516,7 +516,7 @@ spec:
     spec:
       containers:
         - name: dashboard
-          image: lechaukha12/insight-dashboard:v6.1.0
+          image: lechaukha12/insight-dashboard:v6.2.0
           imagePullPolicy: Always
           ports:
             - containerPort: 3000

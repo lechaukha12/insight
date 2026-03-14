@@ -3,16 +3,18 @@
  * Proxies all /api/* requests from the browser to the backend services.
  *
  * Smart routing (post-microservice split):
- *   - Ingestion endpoints (metrics, events, logs, processes, heartbeat, traces)
+ *   - POST/PUT to ingestion endpoints (metrics, events, logs, processes, heartbeat, traces)
  *     → Data Collector (COLLECTOR_URL)
- *   - All other endpoints (dashboard, auth, settings, chat, etc.)
+ *   - GET queries and all other endpoints
  *     → API Gateway (BACKEND_URL)
+ *
+ * KEY: Only POST writes go to Collector. GET reads always go to API Gateway.
  */
 
 const BACKEND   = process.env.BACKEND_URL   || 'http://localhost:8080';
 const COLLECTOR = process.env.COLLECTOR_URL || process.env.BACKEND_URL || 'http://localhost:8081';
 
-// Ingestion path patterns → route to Data Collector
+// Ingestion path patterns → route POST/PUT to Data Collector
 const COLLECTOR_PATTERNS = [
     /^\/api\/v1\/metrics(\/|$)/,
     /^\/api\/v1\/events(\/|$)/,
@@ -22,7 +24,12 @@ const COLLECTOR_PATTERNS = [
     /^\/v1\/traces(\/|$)/,           // OTLP traces
 ];
 
-function getBackendUrl(apiPath) {
+function getBackendUrl(apiPath, method) {
+    // Only route write operations (POST/PUT) to Collector
+    // GET requests always go to API Gateway for querying
+    if (method === 'GET' || method === 'HEAD') {
+        return BACKEND;
+    }
     const fullPath = `/api/${apiPath}`;
     for (const pattern of COLLECTOR_PATTERNS) {
         if (pattern.test(fullPath)) {
@@ -35,7 +42,7 @@ function getBackendUrl(apiPath) {
 async function handler(request, { params }) {
     const { path } = await params;
     const apiPath = path.join('/');
-    const backend = getBackendUrl(apiPath);
+    const backend = getBackendUrl(apiPath, request.method);
     const target = `${backend}/api/${apiPath}`;
     const url = new URL(target);
 
