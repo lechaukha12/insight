@@ -252,3 +252,19 @@ export async function getK8sPVs() { return fetchAPI('/api/v1/k8s/pvs'); }
 export async function getK8sPVCs() { return fetchAPI('/api/v1/k8s/pvcs'); }
 export async function getK8sStorageClasses() { return fetchAPI('/api/v1/k8s/storageclasses'); }
 export async function getK8sIngresses(ns = '_all') { return fetchAPI(`/api/v1/k8s/namespaces/${ns}/ingresses`); }
+
+// ─── AI Chatbot ───
+
+export async function sendChatMessage(message, history = []) {
+    return fetchAPI('/api/v1/chat', { method: 'POST', body: JSON.stringify({ message, history }) });
+}
+
+export async function getGeminiSettings() { return fetchAPI('/api/v1/settings/gemini'); }
+
+export async function updateGeminiSettings(data) {
+    return fetchAPI('/api/v1/settings/gemini', { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export async function testGeminiConnection() {
+    return fetchAPI('/api/v1/settings/gemini/test', { method: 'POST' });
+}

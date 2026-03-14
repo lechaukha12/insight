@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { getAlertConfigs, createAlertConfig, deleteAlertConfig, getSettings, updateSettings, getStorageStats, applyRetention, purgeAllData, getAgentTokens, createAgentToken, revokeAgentToken } from '../lib/api';
+import { getAlertConfigs, createAlertConfig, deleteAlertConfig, getSettings, updateSettings, getStorageStats, applyRetention, purgeAllData, getAgentTokens, createAgentToken, revokeAgentToken, getGeminiSettings, updateGeminiSettings, testGeminiConnection } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 
 const API_BASE = '';
@@ -50,6 +50,14 @@ export default function SettingsPage() {
     const [newCreatedToken, setNewCreatedToken] = useState(null);
     const [tokenCopied, setTokenCopied] = useState(false);
 
+    // AI Assistant state
+    const [geminiKey, setGeminiKey] = useState('');
+    const [geminiEnabled, setGeminiEnabled] = useState(false);
+    const [geminiHasKey, setGeminiHasKey] = useState(false);
+    const [geminiSaving, setGeminiSaving] = useState(false);
+    const [geminiMsg, setGeminiMsg] = useState(null);
+    const [geminiTesting, setGeminiTesting] = useState(false);
+
     const { user } = useAuth();
 
     const fetchData = useCallback(async () => {
@@ -67,7 +75,16 @@ export default function SettingsPage() {
         finally { setWebhookLoading(false); }
     }, []);
 
-    useEffect(() => { fetchData(); fetchWebhooks(); fetchTokens(); }, [fetchData, fetchWebhooks]);
+    const fetchGemini = useCallback(async () => {
+        try {
+            const d = await getGeminiSettings();
+            setGeminiKey(d.api_key || '');
+            setGeminiEnabled(d.enabled || false);
+            setGeminiHasKey(d.has_key || false);
+        } catch (err) { console.error(err); }
+    }, []);
+
+    useEffect(() => { fetchData(); fetchWebhooks(); fetchTokens(); if (user?.role === 'admin') fetchGemini(); }, [fetchData, fetchWebhooks, fetchGemini, user]);
 
     const fetchTokens = async () => {
         try { const d = await getAgentTokens(); setTokens(d.tokens || []); }
@@ -187,6 +204,11 @@ export default function SettingsPage() {
                     <button className={`btn ${tab === 'retention' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('retention')}>
                         Data Retention
                     </button>
+                    {user?.role === 'admin' && (
+                        <button className={`btn ${tab === 'ai' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('ai')}>
+                            AI Assistant
+                        </button>
+                    )}
                 </div>
 
                 {/* ─── General Tab ─── */}
@@ -593,6 +615,127 @@ export default function SettingsPage() {
                                 )}
                             </div>
                         )}
+                    </>
+                )}
+
+                {/* ─── AI Assistant Tab ─── */}
+                {tab === 'ai' && user?.role === 'admin' && (
+                    <>
+                        {geminiMsg && (
+                            <div style={{
+                                background: geminiMsg.type === 'success' ? 'var(--color-success-bg)' : 'var(--color-error-bg)',
+                                border: `1px solid ${geminiMsg.type === 'success' ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                                borderRadius: 'var(--radius-sm)', padding: '10px 16px', marginBottom: '16px',
+                                color: geminiMsg.type === 'success' ? 'var(--color-success)' : 'var(--color-error)', fontSize: '13px',
+                            }}>
+                                {geminiMsg.text}
+                            </div>
+                        )}
+
+                        <div className="grid-2">
+                            <div className="card">
+                                <div className="card-header">
+                                    <div className="card-title">Gemini AI Configuration</div>
+                                </div>
+                                <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 16px' }}>
+                                    Configure Google Gemini API for the AI monitoring assistant. The assistant can analyze system health, traces, logs, and metrics.
+                                </p>
+
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', padding: '12px', background: 'var(--bg-input)', borderRadius: 'var(--radius-sm)' }}>
+                                    <div>
+                                        <div style={{ fontWeight: 600 }}>Enable AI Assistant</div>
+                                        <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Show floating chatbot for admin users</div>
+                                    </div>
+                                    <label className="toggle">
+                                        <input type="checkbox" checked={geminiEnabled} onChange={async (e) => {
+                                            const val = e.target.checked;
+                                            setGeminiEnabled(val);
+                                            try {
+                                                await updateGeminiSettings({ enabled: val });
+                                                setGeminiMsg({ type: 'success', text: val ? 'AI Assistant enabled' : 'AI Assistant disabled' });
+                                            } catch (err) { setGeminiMsg({ type: 'error', text: err.message }); }
+                                        }} />
+                                        <span className="toggle-slider" />
+                                    </label>
+                                </div>
+
+                                <div className="form-group">
+                                    <label className="form-label">Gemini API Key</label>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        <input
+                                            className="form-input"
+                                            type="password"
+                                            placeholder={geminiHasKey ? '••••••••••••••••' : 'Enter your Gemini API key'}
+                                            value={geminiKey.startsWith('*') ? '' : geminiKey}
+                                            onChange={e => setGeminiKey(e.target.value)}
+                                            style={{ flex: 1 }}
+                                        />
+                                        <button
+                                            className="btn btn-primary"
+                                            disabled={geminiSaving || (!geminiKey || geminiKey.startsWith('*'))}
+                                            onClick={async () => {
+                                                setGeminiSaving(true); setGeminiMsg(null);
+                                                try {
+                                                    await updateGeminiSettings({ api_key: geminiKey });
+                                                    setGeminiMsg({ type: 'success', text: 'API key saved!' });
+                                                    setGeminiKey('');
+                                                    fetchGemini();
+                                                } catch (err) { setGeminiMsg({ type: 'error', text: err.message }); }
+                                                finally { setGeminiSaving(false); }
+                                            }}
+                                        >
+                                            {geminiSaving ? 'Saving...' : 'Save Key'}
+                                        </button>
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                                        Get your API key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)' }}>Google AI Studio</a>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="card">
+                                <div className="card-header">
+                                    <div className="card-title">Connection Status</div>
+                                </div>
+                                <div style={{ padding: '12px', background: 'var(--bg-input)', borderRadius: 'var(--radius-sm)', marginBottom: '16px' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                                        <span className={`badge ${geminiHasKey ? 'active' : 'error'}`}>
+                                            <span className="badge-dot" />{geminiHasKey ? 'Key Configured' : 'No Key'}
+                                        </span>
+                                        <span className={`badge ${geminiEnabled ? 'active' : 'inactive'}`}>
+                                            {geminiEnabled ? 'Enabled' : 'Disabled'}
+                                        </span>
+                                    </div>
+                                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Model: Gemini 2.0 Flash</div>
+                                </div>
+
+                                <button
+                                    className="btn btn-secondary"
+                                    disabled={geminiTesting || !geminiHasKey}
+                                    onClick={async () => {
+                                        setGeminiTesting(true); setGeminiMsg(null);
+                                        try {
+                                            const res = await testGeminiConnection();
+                                            setGeminiMsg({ type: 'success', text: `Connection successful! Response: ${res.response}` });
+                                        } catch (err) { setGeminiMsg({ type: 'error', text: err.message }); }
+                                        finally { setGeminiTesting(false); }
+                                    }}
+                                >
+                                    {geminiTesting ? 'Testing...' : 'Test Connection'}
+                                </button>
+
+                                <div style={{ marginTop: 20, padding: '12px', background: 'var(--bg-input)', borderRadius: 'var(--radius-sm)' }}>
+                                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Features</div>
+                                    <ul style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, paddingLeft: 16, lineHeight: 1.8 }}>
+                                        <li>Query system health & agent status</li>
+                                        <li>Analyze traces, logs, and metrics</li>
+                                        <li>Identify performance issues</li>
+                                        <li>Get actionable recommendations</li>
+                                        <li>Natural language monitoring queries</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
                     </>
                 )}
             </div>

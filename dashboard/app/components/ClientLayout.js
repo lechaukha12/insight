@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './AuthProvider';
 import { TimeRangeProvider } from '../lib/TimeRangeContext';
 import Sidebar from './Sidebar';
 import TimeRangePicker from './TimeRangePicker';
+import AIChatbot from './AIChatbot';
 
 function AppShell({ children }) {
     const pathname = usePathname();
@@ -39,6 +40,7 @@ function AppShell({ children }) {
                 </div>
                 {children}
             </main>
+            <AIChatbot />
         </div>
     );
 }

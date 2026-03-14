@@ -13,3 +13,4 @@ clickhouse-connect==0.8.9
 kubernetes==31.0.0
 opentelemetry-proto==1.29.0
 protobuf==5.29.3
+google-genai==1.0.0
