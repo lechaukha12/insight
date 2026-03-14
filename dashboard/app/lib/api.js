@@ -56,6 +56,15 @@ export async function getDashboardSummary(clusterId, timeParams = {}) {
     return fetchAPI(`/api/v1/dashboard/summary${q ? '?' + q : ''}`);
 }
 
+export async function getDashboardV2Summary(clusterId, timeParams = {}) {
+    const params = new URLSearchParams();
+    if (clusterId) params.set('cluster_id', clusterId);
+    if (timeParams.from_time) params.set('from_time', timeParams.from_time);
+    if (timeParams.to_time) params.set('to_time', timeParams.to_time);
+    const q = params.toString();
+    return fetchAPI(`/api/v1/dashboard/v2/summary${q ? '?' + q : ''}`);
+}
+
 // ─── Clusters ───
 
 export async function getClusters() {

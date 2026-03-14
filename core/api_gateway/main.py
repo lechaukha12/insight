@@ -1,5 +1,5 @@
 """
-Insight Monitoring System - API Gateway v6.0.0
+Insight Monitoring System - API Gateway v6.0.1
 Dashboard-facing service: Auth, queries, config CRUD, K8s proxy, AI chat, WebSocket.
 Data ingestion moved to Data Collector service.
 Alert processing moved to Alert Worker service.
@@ -372,6 +372,108 @@ async def dashboard_summary(cluster_id: str = Query(None), from_time: str = Quer
         "latest_metrics": latest_metrics,
         "recent_events": recent_events[:20],
         "clusters": clusters,
+    }
+
+
+@app.get("/api/v1/dashboard/v2/summary")
+async def dashboard_v2_summary(cluster_id: str = Query(None), from_time: str = Query(None), to_time: str = Query(None)):
+    """Dashboard v2 — grouped by agent category with per-category metrics overview."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+
+    # Run all queries in parallel
+    agents_f = loop.run_in_executor(None, lambda: list_agents(cluster_id=cluster_id, from_time=from_time, to_time=to_time))
+    events_f = loop.run_in_executor(None, lambda: get_event_counts(last_hours=24))
+    metrics_f = loop.run_in_executor(None, get_latest_metrics_per_agent)
+    recent_f = loop.run_in_executor(None, lambda: get_events(last_hours=24, limit=50, from_time=from_time, to_time=to_time))
+    clusters_f = loop.run_in_executor(None, list_clusters)
+    traces_f = loop.run_in_executor(None, lambda: get_trace_summary(last_hours=1))
+    services_f = loop.run_in_executor(None, get_services)
+
+    agents, event_counts, latest_metrics, recent_events, clusters, trace_summary, services = await asyncio.gather(
+        agents_f, events_f, metrics_f, recent_f, clusters_f, traces_f, services_f
+    )
+
+    # ── Build category cards ──
+    categories = {}
+    for agent in agents:
+        cat = agent.get("agent_category", "other")
+        if cat not in categories:
+            categories[cat] = {"agents": [], "count": 0, "active": 0}
+        categories[cat]["agents"].append(agent)
+        categories[cat]["count"] += 1
+        if agent.get("status") == "active":
+            categories[cat]["active"] += 1
+
+    # Enrich each category with relevant metrics
+    for cat, info in categories.items():
+        agent_ids = [a["id"] for a in info["agents"]]
+        if cat == "system":
+            # Avg CPU, Memory, Disk from latest metrics
+            cpus, mems, disks = [], [], []
+            for aid in agent_ids:
+                for m in latest_metrics.get(aid, []):
+                    name = m.get("metric_name", "")
+                    val = m.get("metric_value", 0)
+                    if "cpu" in name: cpus.append(val)
+                    elif "memory" in name: mems.append(val)
+                    elif "disk" in name: disks.append(val)
+            info["avg_cpu"] = round(sum(cpus) / len(cpus), 1) if cpus else None
+            info["avg_memory"] = round(sum(mems) / len(mems), 1) if mems else None
+            info["avg_disk"] = round(sum(disks) / len(disks), 1) if disks else None
+        elif cat == "kubernetes":
+            # Aggregate K8s metrics: nodes, pods, warnings
+            nodes, pods, warnings = 0, 0, 0
+            for aid in agent_ids:
+                for m in latest_metrics.get(aid, []):
+                    name = m.get("metric_name", "")
+                    val = int(m.get("metric_value", 0))
+                    if name == "nodes_total": nodes += val
+                    elif name == "pods_total": pods += val
+                    elif name == "warning_events": warnings += val
+            info["nodes"] = nodes
+            info["pods"] = pods
+            info["warnings"] = warnings
+        elif cat == "application":
+            # Use trace summary for APM data
+            info["services"] = len(services) if services else 0
+            if trace_summary:
+                info["total_requests"] = trace_summary.get("total_requests", 0)
+                info["avg_latency"] = trace_summary.get("avg_latency_ms")
+                info["error_rate"] = trace_summary.get("error_rate", 0)
+                info["service_list"] = trace_summary.get("services", [])
+            else:
+                info["total_requests"] = 0
+                info["avg_latency"] = None
+                info["error_rate"] = 0
+                info["service_list"] = []
+        # Remove raw agent objects to keep response lean
+        info["agent_names"] = [{"id": a["id"], "name": a["name"], "status": a.get("status")} for a in info["agents"]]
+        del info["agents"]
+
+    # ── Active alerts (unacknowledged) ──
+    active_alerts = [e for e in recent_events if not e.get("acknowledged")]
+    # Sort: critical > error > warning > info
+    level_order = {"critical": 0, "error": 1, "warning": 2, "info": 3}
+    active_alerts.sort(key=lambda e: level_order.get(e.get("level", "info"), 9))
+
+    total_events = sum(event_counts.values())
+    return {
+        "summary": {
+            "total_agents": len(agents),
+            "active_agents": sum(1 for a in agents if a.get("status") == "active"),
+            "total_events_24h": total_events,
+            "critical_alerts": event_counts.get("critical", 0),
+            "error_alerts": event_counts.get("error", 0),
+            "warning_alerts": event_counts.get("warning", 0),
+            "total_services": len(services) if services else 0,
+            "total_clusters": len(clusters),
+        },
+        "categories": categories,
+        "active_alerts": active_alerts[:15],
+        "recent_events": recent_events[:20],
+        "clusters": clusters,
+        "event_counts": event_counts,
     }
 
 # ════════════════════════════════════════════════

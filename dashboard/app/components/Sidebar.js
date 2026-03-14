@@ -89,7 +89,7 @@ export default function Sidebar({ isOpen, onClose }) {
                         <button className="btn btn-sm btn-secondary" onClick={logout}>Logout</button>
                     </div>
                 )}
-                <div className="sidebar-version">v5.0.3</div>
+                <div className="sidebar-version">v6.0.1</div>
             </div>
         </aside>
     );
