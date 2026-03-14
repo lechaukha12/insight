@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down")
 
-app = FastAPI(title="Insight Monitoring System", version="5.0.2", lifespan=lifespan)
+app = FastAPI(title="Insight Monitoring System", version="5.1.1", lifespan=lifespan)
 
 # ─── CORS (restrict to specific origins) ───
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
@@ -131,11 +131,11 @@ LOGIN_WINDOW_SECONDS = 60
 # ─── Health ───
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.0.2", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "version": "5.1.1", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/")
 async def root():
-    return {"app": "Insight Monitoring System", "version": "5.0.2"}
+    return {"app": "Insight Monitoring System", "version": "5.1.1"}
 
 # ════════════════════════════════════════════════
 # AUTH ROUTES
@@ -192,7 +192,8 @@ async def change_password(request: Request, user: dict = Depends(require_auth)):
 
 @app.get("/api/v1/users")
 async def get_all_users(user: dict = Depends(require_role(["admin"]))):
-    return {"users": list_users(), "total": len(list_users())}
+    users = list_users()
+    return {"users": users, "total": len(users)}
 
 @app.post("/api/v1/users")
 async def create_new_user(request: Request, user: dict = Depends(require_role(["admin"]))):
@@ -264,7 +265,6 @@ async def agent_connect(request: Request):
     body["ip_address"] = client_ip
     # Connect agent
     result = connect_agent(token_record, body)
-    from datetime import datetime, timezone
     return {
         "status": "connected",
         "agent_id": result["id"],
@@ -300,19 +300,8 @@ async def agent_heartbeat(agent_id: str):
 @app.delete("/api/v1/agents/{agent_id}")
 async def delete_agent_endpoint(agent_id: str, user: dict = Depends(require_role(["admin"]))):
     """Delete an agent by ID (admin only)."""
-    from shared.database.db import get_agent, _insert, _version, _now
-    import json as _json
-    agent = get_agent(agent_id)
-    if agent:
-        _insert('agents',
-                ['id', 'name', 'agent_type', 'agent_category', 'hostname', 'cluster_id', 'status',
-                 'labels', 'token_id', 'agent_version', 'os_info', 'ip_address', 'last_heartbeat',
-                 '_version', '_deleted', 'created_at'],
-                [[agent_id, agent.get('name', ''), agent.get('agent_type', ''), agent.get('agent_category', ''),
-                  agent.get('hostname', ''), agent.get('cluster_id', ''), 'deleted',
-                  _json.dumps(agent.get('labels', {})) if isinstance(agent.get('labels'), dict) else agent.get('labels', '{}'),
-                  agent.get('token_id', ''), agent.get('agent_version', ''), agent.get('os_info', ''),
-                  agent.get('ip_address', ''), agent.get('last_heartbeat', _now()), _version(), 1, agent.get('created_at', _now())]])
+    from shared.database.db import delete_agent
+    delete_agent(agent_id)
     insert_audit_log(user["id"], user["username"], "delete_agent", "agent", {"agent_id": agent_id})
     return {"status": "deleted", "agent_id": agent_id}
 
@@ -425,7 +414,7 @@ async def query_events(agent_id: str = Query(None), level: str = Query(None),
                       from_time=from_time, to_time=to_time)
     return {"events": data, "total": len(data)}
 
-@app.post("/api/v1/events/{event_id}/acknowledge")
+@app.post("/api/v1/events/{event_id}/acknowledge", dependencies=[Depends(require_auth)])
 async def ack_event(event_id: str):
     acknowledge_event(event_id)
     return {"status": "acknowledged"}
@@ -484,7 +473,7 @@ async def dashboard_summary(cluster_id: str = Query(None), from_time: str = Quer
 # ALERT CONFIG
 # ════════════════════════════════════════════════
 
-@app.get("/api/v1/settings/alerts")
+@app.get("/api/v1/settings/alerts", dependencies=[Depends(require_auth)])
 async def get_alert_settings():
     return {"configs": get_alert_configs()}
 
@@ -505,7 +494,7 @@ async def remove_alert_setting(config_id: str, user: dict = Depends(require_role
 # WEBHOOK ROUTES
 # ════════════════════════════════════════════════
 
-@app.get("/api/v1/webhooks")
+@app.get("/api/v1/webhooks", dependencies=[Depends(require_auth)])
 async def list_all_webhooks():
     wh = get_webhooks()
     return {"webhooks": wh, "total": len(wh)}
@@ -545,7 +534,7 @@ async def test_webhook(wh_id: str, user: dict = Depends(require_role(["admin","o
 # NOTIFICATION RULES
 # ════════════════════════════════════════════════
 
-@app.get("/api/v1/rules")
+@app.get("/api/v1/rules", dependencies=[Depends(require_auth)])
 async def list_rules():
     rules = get_rules()
     return {"rules": rules, "total": len(rules)}
@@ -642,13 +631,15 @@ async def websocket_dashboard(websocket: WebSocket):
     if len(ws_manager.active_connections) >= 50:
         await websocket.close(code=1013)
         return
-    # Auth: require token in query param
+    # Auth: require valid token in query param
     token = websocket.query_params.get("token")
-    if token:
-        payload = verify_token(token)
-        if not payload:
-            await websocket.close(code=4001)
-            return
+    if not token:
+        await websocket.close(code=4001)
+        return
+    payload = verify_token(token)
+    if not payload:
+        await websocket.close(code=4001)
+        return
     await ws_manager.connect(websocket)
     try:
         while True:
@@ -681,12 +672,17 @@ async def trigger_log_alert(agent_id: str, error_logs: list[dict]):
         from alert_service.providers import alert_manager
         configs = get_alert_configs()
         summary = f"Detected {len(error_logs)} error logs"
-        details = "\n".join(f"[{l.get('namespace','')}] {l.get('pod_name','')}: {l.get('message','')[:100]}" for l in error_logs[:5])
+        details = "\n".join([f"[{l.get('namespace','')}] {l.get('pod_name','')}: {l.get('message','')[:100]}" for l in error_logs[:5]])
         await alert_manager.send_alert(level="error", title=summary, message=details, source=f"agent:{agent_id}", configs=configs)
     except Exception as e: logger.error(f"Log alert failed: {e}")
 
 async def check_metric_alerts(agent_id: str, metrics: list[dict]):
     rules = get_rules(enabled_only=True)
+    if not rules:
+        return
+    # Cache configs and webhooks once before the loop
+    configs = get_alert_configs()
+    webhooks = get_webhooks(enabled_only=True)
     for m in metrics:
         name, value = m.get("metric_name",""), m.get("metric_value",0)
         for rule in rules:
@@ -698,13 +694,11 @@ async def check_metric_alerts(agent_id: str, metrics: list[dict]):
             if triggered:
                 try:
                     from alert_service.providers import alert_manager
-                    configs = get_alert_configs()
                     await alert_manager.send_alert(level="warning", title=f"Rule: {rule['name']}",
                         message=f"Agent {agent_id}: {name} = {value:.1f} ({op} {threshold})", source=f"rule:{rule['id']}", configs=configs)
                 except: pass
                 try:
                     from api_gateway.webhook_sender import send_to_all_webhooks
-                    webhooks = get_webhooks(enabled_only=True)
                     await send_to_all_webhooks(webhooks, "warning", f"Rule: {rule['name']}",
                         f"Agent {agent_id}: {name} = {value:.1f} ({op} {threshold})", f"rule:{rule['id']}")
                 except: pass
@@ -747,14 +741,14 @@ async def query_traces(agent_id: str = None, last_hours: int = 24, limit: int = 
                         from_time=from_time, to_time=to_time)
     return {"traces": result, "total": len(result)}
 
-@app.get("/api/v1/traces/summary")
+@app.get("/api/v1/traces/summary", dependencies=[Depends(require_auth)])
 async def trace_summary(last_hours: int = 1):
     """Aggregate trace stats for Application Monitoring dashboard."""
     return get_trace_summary(last_hours=last_hours)
 
 # ─── Services (v5.0.2) ───
 
-@app.get("/api/v1/services")
+@app.get("/api/v1/services", dependencies=[Depends(require_auth)])
 async def list_services(last_hours: int = Query(24)):
     """Get distinct OTel service names from traces."""
     services = get_services(last_hours=last_hours)

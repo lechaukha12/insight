@@ -1,6 +1,6 @@
 """
 Insight Monitoring System - Database Connection & Operations
-ClickHouse-only backend (v5.1.0)
+ClickHouse-only backend (v5.1.1)
 Set CLICKHOUSE_URL env var: http://clickhouse:8123
 """
 
@@ -19,31 +19,47 @@ _ch_client = None
 
 
 def _get_ch_client():
-    """Get or create ClickHouse client singleton."""
+    """Get or create ClickHouse client singleton with reconnect support."""
     global _ch_client
-    if _ch_client is None:
-        import clickhouse_connect
-        from urllib.parse import urlparse
-        parsed = urlparse(CLICKHOUSE_URL)
-        host = parsed.hostname or 'localhost'
-        port = parsed.port or 8123
-        _ch_client = clickhouse_connect.get_client(
-            host=host, port=port, database='insight',
-            connect_timeout=10, send_receive_timeout=30
-        )
+    if _ch_client is not None:
+        # Verify connection is alive
+        try:
+            _ch_client.command("SELECT 1")
+            return _ch_client
+        except Exception:
+            print("[DB] ClickHouse connection lost, reconnecting...", flush=True)
+            _ch_client = None
+    import clickhouse_connect
+    from urllib.parse import urlparse
+    parsed = urlparse(CLICKHOUSE_URL)
+    host = parsed.hostname or 'localhost'
+    port = parsed.port or 8123
+    _ch_client = clickhouse_connect.get_client(
+        host=host, port=port, database='insight',
+        connect_timeout=10, send_receive_timeout=30
+    )
     return _ch_client
 
 
 def _run(query, params=None, fetch=False):
-    """Run a ClickHouse query."""
-    client = _get_ch_client()
-    if fetch:
-        result = client.query(query, parameters=params or {})
-        columns = result.column_names
-        return [dict(zip(columns, row)) for row in result.result_rows]
-    else:
-        client.command(query, parameters=params or {})
-        return None
+    """Run a ClickHouse query with auto-reconnect on failure."""
+    for attempt in range(2):
+        try:
+            client = _get_ch_client()
+            if fetch:
+                result = client.query(query, parameters=params or {})
+                columns = result.column_names
+                return [dict(zip(columns, row)) for row in result.result_rows]
+            else:
+                client.command(query, parameters=params or {})
+                return None
+        except Exception as e:
+            if attempt == 0:
+                global _ch_client
+                _ch_client = None  # Force reconnect on next attempt
+                print(f"[DB] Query failed, retrying: {e}", flush=True)
+                continue
+            raise
 
 
 def _insert(table, columns, data):
@@ -61,6 +77,7 @@ def _insert(table, columns, data):
                         try:
                             new_row[i] = datetime.strptime(v, '%Y-%m-%d %H:%M:%S')
                         except (ValueError, TypeError):
+                            print(f"[DB] WARNING: Invalid timestamp format '{v}' in column '{columns[i]}', using current time", flush=True)
                             new_row[i] = datetime.now(timezone.utc).replace(tzinfo=None)
                     elif v is None:
                         new_row[i] = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -392,6 +409,23 @@ def update_agent_heartbeat(agent_id: str):
         _upsert_agent(agent_id, agent, updates={"last_heartbeat": _now(), "status": "active"})
 
 
+def delete_agent(agent_id: str):
+    """Soft-delete an agent via ReplacingMergeTree pattern."""
+    agent = get_agent(agent_id)
+    if agent:
+        _upsert_agent(agent_id, agent, updates={"status": "deleted"})
+        # Mark as deleted
+        _insert('agents',
+                ['id', 'name', 'agent_type', 'agent_category', 'hostname', 'cluster_id', 'status',
+                 'labels', 'token_id', 'agent_version', 'os_info', 'ip_address', 'last_heartbeat',
+                 '_version', '_deleted', 'created_at'],
+                [[agent_id, agent.get('name', ''), agent.get('agent_type', ''), agent.get('agent_category', ''),
+                  agent.get('hostname', ''), agent.get('cluster_id', ''), 'deleted',
+                  json.dumps(agent.get('labels', {})) if isinstance(agent.get('labels'), dict) else agent.get('labels', '{}'),
+                  agent.get('token_id', ''), agent.get('agent_version', ''), agent.get('os_info', ''),
+                  agent.get('ip_address', ''), agent.get('last_heartbeat', _now()), _version(), 1, agent.get('created_at', _now())]])
+
+
 def update_agent_status(agent_id: str, status: str):
     agent = get_agent(agent_id)
     if agent:
@@ -544,15 +578,19 @@ def get_metrics(agent_id: str = None, metric_name: str = None, last_hours: int =
 
 
 def get_latest_metrics_per_agent() -> dict[str, list[dict]]:
+    # Only scan last 24h to avoid full table scan
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
     query = """SELECT m.* FROM metrics m
                INNER JOIN (
                    SELECT agent_id, metric_name, MAX(timestamp) as max_ts
-                   FROM metrics GROUP BY agent_id, metric_name
+                   FROM metrics WHERE timestamp >= {cutoff:String}
+                   GROUP BY agent_id, metric_name
                ) latest ON m.agent_id = latest.agent_id
                    AND m.metric_name = latest.metric_name
                    AND m.timestamp = latest.max_ts
+               WHERE m.timestamp >= {cutoff:String}
                ORDER BY m.agent_id, m.metric_name"""
-    rows = _run(query, fetch=True) or []
+    rows = _run(query, params={"cutoff": cutoff}, fetch=True) or []
     result: dict[str, list[dict]] = {}
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))
