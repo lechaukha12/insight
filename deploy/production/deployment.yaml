@@ -370,7 +370,7 @@ spec:
       serviceAccountName: insight-api-sa
       containers:
         - name: api-gateway
-          image: lechaukha12/insight-api:v5.3.0
+          image: lechaukha12/insight-api:v5.3.1
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
