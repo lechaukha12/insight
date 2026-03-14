@@ -29,7 +29,7 @@ spec:
             - name: OTEL_SERVICE_NAME
               value: "order-service"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://insight-api:8080"
+              value: "http://insight-collector:8081"
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_METRICS_EXPORTER
@@ -87,7 +87,7 @@ spec:
             - name: OTEL_SERVICE_NAME
               value: "payment-service"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://insight-api:8080"
+              value: "http://insight-collector:8081"
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_METRICS_EXPORTER

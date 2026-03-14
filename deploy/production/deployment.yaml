@@ -370,7 +370,7 @@ spec:
       serviceAccountName: insight-api-sa
       containers:
         - name: api-gateway
-          image: lechaukha12/insight-api:v5.3.1
+          image: lechaukha12/insight-api:v6.0.0
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -403,6 +403,98 @@ spec:
     - port: 8080
       targetPort: 8080
   type: ClusterIP
+---
+# ─── Data Collector Deployment ───
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insight-collector
+  namespace: insight-system
+  labels:
+    app: insight-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: insight-collector
+  template:
+    metadata:
+      labels:
+        app: insight-collector
+    spec:
+      containers:
+        - name: data-collector
+          image: lechaukha12/insight-collector:v1.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: insight-config
+            - secretRef:
+                name: insight-secrets
+          env:
+            - name: CLICKHOUSE_URL
+              value: "http://clickhouse:8123"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+# ─── Data Collector Service ───
+apiVersion: v1
+kind: Service
+metadata:
+  name: insight-collector
+  namespace: insight-system
+spec:
+  selector:
+    app: insight-collector
+  ports:
+    - port: 8081
+      targetPort: 8081
+  type: ClusterIP
+---
+# ─── Alert Worker Deployment ───
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insight-worker
+  namespace: insight-system
+  labels:
+    app: insight-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: insight-worker
+  template:
+    metadata:
+      labels:
+        app: insight-worker
+    spec:
+      containers:
+        - name: alert-worker
+          image: lechaukha12/insight-worker:v1.0.0
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: insight-config
+            - secretRef:
+                name: insight-secrets
+          env:
+            - name: CLICKHOUSE_URL
+              value: "http://clickhouse:8123"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
 ---
 # ─── Dashboard Deployment ───
 apiVersion: apps/v1

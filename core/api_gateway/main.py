@@ -1,7 +1,8 @@
 """
-Insight Monitoring System - API Gateway v5.0.2
-RBAC, Webhooks, WebSocket, Multi-cluster support.
-Security: API key auth, CORS restriction, rate limiting, request size limit.
+Insight Monitoring System - API Gateway v6.0.0
+Dashboard-facing service: Auth, queries, config CRUD, K8s proxy, AI chat, WebSocket.
+Data ingestion moved to Data Collector service.
+Alert processing moved to Alert Worker service.
 """
 
 import asyncio
@@ -21,11 +22,11 @@ from fastapi.responses import JSONResponse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.database.db import (
-    init_db, register_agent, get_or_create_agent, list_agents, get_agent,
-    update_agent_heartbeat, insert_metrics, get_metrics, get_latest_metrics_per_agent,
+    init_db, list_agents, get_agent,
+    get_metrics, get_latest_metrics_per_agent,
     get_metrics_timeseries, get_event_counts_by_hour,
-    insert_events, get_events, get_event_counts, acknowledge_event,
-    insert_logs, get_logs,
+    get_events, get_event_counts, acknowledge_event,
+    get_logs,
     save_alert_config, get_alert_configs, delete_alert_config,
     save_report, get_reports, get_setting, set_setting,
     create_user, get_user_by_username, get_user_by_id, list_users, update_user_password, delete_user,
@@ -33,12 +34,12 @@ from shared.database.db import (
     save_rule, get_rules, delete_rule, toggle_rule,
     insert_audit_log, get_audit_logs,
     save_webhook, get_webhooks, delete_webhook, toggle_webhook,
-    save_process_snapshot, get_process_snapshot,
-    insert_traces, get_traces, get_trace_summary,
+    get_process_snapshot,
+    get_traces, get_trace_summary,
     get_storage_stats, apply_retention_policies, purge_all_data,
     get_services, get_traces_by_service, get_metrics_by_service,
-    create_agent_token, list_agent_tokens, verify_agent_token, revoke_agent_token,
-    get_agents_by_token, connect_agent, migrate_agent_tokens_table,
+    create_agent_token, list_agent_tokens, revoke_agent_token,
+    get_agents_by_token, migrate_agent_tokens_table,
 )
 from api_gateway.auth import (
     hash_password, verify_password, create_token, verify_token,
@@ -70,7 +71,7 @@ ws_manager = ConnectionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Insight API Gateway v5.0.3 starting...")
+    logger.info("Insight API Gateway v6.0.0 starting...")
     init_db()
     migrate_agent_tokens_table()
     ensure_default_admin()
@@ -78,31 +79,13 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down")
 
-app = FastAPI(title="Insight Monitoring System", version="5.1.1", lifespan=lifespan)
+app = FastAPI(title="Insight Monitoring System", version="6.0.0", lifespan=lifespan)
 
 # ─── CORS (restrict to specific origins) ───
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- API Key / Agent Token validation for agent endpoints ---
-API_KEY = os.getenv("INSIGHT_API_KEY", "")
-if not API_KEY:
-    import secrets as _sec
-    API_KEY = _sec.token_urlsafe(32)
-    logger.warning(f"INSIGHT_API_KEY not set, generated random key: {API_KEY}")
-
-async def require_agent_token(request: Request):
-    """Validate agent auth: requires X-Agent-Token header (token-based auth only)."""
-    agent_token = request.headers.get("X-Agent-Token", "")
-    if not agent_token:
-        raise HTTPException(status_code=401, detail="X-Agent-Token header required")
-    token_record = verify_agent_token(agent_token)
-    if not token_record:
-        raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
-    request.state.token_record = token_record
-
-# Keep backward compat alias
-require_api_key = require_agent_token
+# Note: Agent ingestion auth (API key + agent token) is in Data Collector service
 
 # ─── Response time logging middleware ───
 @app.middleware("http")
@@ -131,11 +114,11 @@ LOGIN_WINDOW_SECONDS = 60
 # ─── Health ───
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.1.1", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "service": "api-gateway", "version": "6.0.0", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/")
 async def root():
-    return {"app": "Insight Monitoring System", "version": "5.1.1"}
+    return {"app": "Insight Monitoring System", "service": "api-gateway", "version": "6.0.0"}
 
 # ════════════════════════════════════════════════
 # AUTH ROUTES
@@ -234,53 +217,15 @@ async def create_new_cluster(request: Request, user: dict = Depends(require_role
     return {"status": "created", "cluster": cluster}
 
 # ════════════════════════════════════════════════
-# AGENT ROUTES
+# AGENT ROUTES (read-only — registration/heartbeat in Data Collector)
 # ════════════════════════════════════════════════
-
-@app.post("/api/v1/agents/register", dependencies=[Depends(require_agent_token)])
-async def register_new_agent(request: Request):
-    body = await request.json()
-    agent = register_agent(name=body.get("name","unnamed"), agent_type=body.get("agent_type","unknown"),
-                           hostname=body.get("hostname",""), labels=body.get("labels",{}),
-                           cluster_id=body.get("cluster_id","default"), agent_category=body.get("agent_category"))
-    return {"status": "registered", "agent": agent}
-
-@app.post("/api/v1/agents/connect")
-async def agent_connect(request: Request):
-    """Token-based agent auto-registration. Agent sends token + metadata, gets back agent_id."""
-    # Validate token
-    agent_token = request.headers.get("X-Agent-Token", "")
-    if not agent_token:
-        raise HTTPException(status_code=401, detail="X-Agent-Token header required")
-    token_record = verify_agent_token(agent_token)
-    if not token_record:
-        raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
-    # Check type restriction
-    body = await request.json()
-    requested_type = body.get("agent_type", "system")
-    if token_record.get("agent_type") not in ("any", requested_type):
-        raise HTTPException(status_code=403, detail=f"Token restricted to type '{token_record['agent_type']}', got '{requested_type}'")
-    # Get client IP
-    client_ip = request.client.host if request.client else ""
-    body["ip_address"] = client_ip
-    # Connect agent
-    result = connect_agent(token_record, body)
-    return {
-        "status": "connected",
-        "agent_id": result["id"],
-        "agent_name": result["name"],
-        "agent_category": result["agent_category"],
-        "server_time": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-    }
 
 @app.get("/api/v1/agents")
 async def get_all_agents(cluster_id: str = Query(None), category: str = Query(None),
                         from_time: str = Query(None), to_time: str = Query(None)):
     agents = list_agents(cluster_id=cluster_id, from_time=from_time, to_time=to_time)
-    # Filter by category if specified
     if category and category != 'all':
         agents = [a for a in agents if a.get('agent_category') == category]
-    # Merge latest_metrics into each agent
     metrics_map = get_latest_metrics_per_agent()
     for a in agents:
         a["latest_metrics"] = metrics_map.get(a["id"], [])
@@ -291,11 +236,6 @@ async def get_agent_detail(agent_id: str):
     agent = get_agent(agent_id)
     if not agent: raise HTTPException(404, "Agent not found")
     return agent
-
-@app.post("/api/v1/agents/{agent_id}/heartbeat", dependencies=[Depends(require_agent_token)])
-async def agent_heartbeat(agent_id: str):
-    update_agent_heartbeat(agent_id)
-    return {"status": "ok"}
 
 @app.delete("/api/v1/agents/{agent_id}")
 async def delete_agent_endpoint(agent_id: str, user: dict = Depends(require_role(["admin"]))):
@@ -346,22 +286,8 @@ async def get_token_agents(token_id: str, user: dict = Depends(require_role(["ad
     return {"agents": agents, "total": len(agents)}
 
 # ════════════════════════════════════════════════
-# METRICS ROUTES
+# METRICS ROUTES (read-only — ingestion in Data Collector)
 # ════════════════════════════════════════════════
-
-@app.post("/api/v1/metrics", dependencies=[Depends(require_api_key)])
-async def receive_metrics(request: Request):
-    body = await request.json()
-    agent_id = body.get("agent_id","")
-    get_or_create_agent(agent_id, body.get("agent_name",agent_id), body.get("agent_type","unknown"),
-                        body.get("hostname",""), body.get("cluster_id","default"), agent_category=body.get("agent_category"))
-    metrics = body.get("metrics", [])
-    if metrics:
-        insert_metrics(agent_id, metrics)
-        logger.info(f"Received {len(metrics)} metrics from {agent_id}")
-        await check_metric_alerts(agent_id, metrics)
-        await ws_manager.broadcast({"type": "metrics", "agent_id": agent_id, "count": len(metrics)})
-    return {"status": "ok", "received": len(metrics)}
 
 @app.get("/api/v1/metrics")
 async def query_metrics(agent_id: str = Query(None), metric_name: str = Query(None),
@@ -386,25 +312,8 @@ async def chart_events(last_hours: int = Query(24)):
     return {"timeseries": get_event_counts_by_hour(last_hours=last_hours)}
 
 # ════════════════════════════════════════════════
-# EVENTS ROUTES
+# EVENTS ROUTES (read-only — ingestion in Data Collector)
 # ════════════════════════════════════════════════
-
-@app.post("/api/v1/events", dependencies=[Depends(require_api_key)])
-async def receive_events(request: Request):
-    body = await request.json()
-    agent_id = body.get("agent_id","")
-    get_or_create_agent(agent_id, body.get("agent_name",agent_id), body.get("agent_type","unknown"),
-                        agent_category=body.get("agent_category"))
-    events = body.get("events", [])
-    if events:
-        insert_events(agent_id, events)
-        logger.info(f"Received {len(events)} events from {agent_id}")
-        for e in events:
-            if e.get("level","info") in ("error","critical"):
-                await trigger_alert(e)
-        await ws_manager.broadcast({"type":"events","agent_id":agent_id,"count":len(events),
-            "events":[{"title":e.get("title",""),"level":e.get("level","info")} for e in events[:5]]})
-    return {"status": "ok", "received": len(events)}
 
 @app.get("/api/v1/events")
 async def query_events(agent_id: str = Query(None), level: str = Query(None),
@@ -420,21 +329,8 @@ async def ack_event(event_id: str):
     return {"status": "acknowledged"}
 
 # ════════════════════════════════════════════════
-# LOGS ROUTES
+# LOGS ROUTES (read-only — ingestion in Data Collector)
 # ════════════════════════════════════════════════
-
-@app.post("/api/v1/logs", dependencies=[Depends(require_api_key)])
-async def receive_logs(request: Request):
-    body = await request.json()
-    agent_id = body.get("agent_id","")
-    get_or_create_agent(agent_id, body.get("agent_name",agent_id), body.get("agent_type","unknown"),
-                        agent_category=body.get("agent_category"))
-    logs = body.get("logs", [])
-    if logs:
-        insert_logs(agent_id, logs)
-        error_logs = [l for l in logs if l.get("log_level") == "error"]
-        if error_logs: await trigger_log_alert(agent_id, error_logs)
-    return {"status": "ok", "received": len(logs)}
 
 @app.get("/api/v1/logs")
 async def query_logs(agent_id: str = Query(None), last_hours: int = Query(24), limit: int = Query(500),
@@ -648,72 +544,7 @@ async def websocket_dashboard(websocket: WebSocket):
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
 
-# ════════════════════════════════════════════════
-# INTERNAL ALERT LOGIC
-# ════════════════════════════════════════════════
-
-async def trigger_alert(event: dict):
-    try:
-        from alert_service.providers import alert_manager
-        configs = get_alert_configs()
-        await alert_manager.send_alert(level=event.get("level","error"), title=event.get("title",""),
-                                       message=event.get("message",""), source=event.get("source",""), configs=configs)
-    except Exception as e: logger.error(f"Alert trigger failed: {e}")
-    # Send to webhooks
-    try:
-        from api_gateway.webhook_sender import send_to_all_webhooks
-        webhooks = get_webhooks(enabled_only=True)
-        await send_to_all_webhooks(webhooks, event.get("level","error"), event.get("title",""),
-                                   event.get("message",""), event.get("source",""))
-    except Exception as e: logger.error(f"Webhook alert failed: {e}")
-
-async def trigger_log_alert(agent_id: str, error_logs: list[dict]):
-    try:
-        from alert_service.providers import alert_manager
-        configs = get_alert_configs()
-        summary = f"Detected {len(error_logs)} error logs"
-        details = "\n".join([f"[{l.get('namespace','')}] {l.get('pod_name','')}: {l.get('message','')[:100]}" for l in error_logs[:5]])
-        await alert_manager.send_alert(level="error", title=summary, message=details, source=f"agent:{agent_id}", configs=configs)
-    except Exception as e: logger.error(f"Log alert failed: {e}")
-
-async def check_metric_alerts(agent_id: str, metrics: list[dict]):
-    rules = get_rules(enabled_only=True)
-    if not rules:
-        return
-    # Cache configs and webhooks once before the loop
-    configs = get_alert_configs()
-    webhooks = get_webhooks(enabled_only=True)
-    for m in metrics:
-        name, value = m.get("metric_name",""), m.get("metric_value",0)
-        for rule in rules:
-            if rule["metric_name"] != name: continue
-            op, threshold = rule["operator"], rule["threshold"]
-            triggered = (op == ">" and value > threshold) or (op == ">=" and value >= threshold) or \
-                        (op == "<" and value < threshold) or (op == "<=" and value <= threshold) or \
-                        (op == "==" and value == threshold)
-            if triggered:
-                try:
-                    from alert_service.providers import alert_manager
-                    await alert_manager.send_alert(level="warning", title=f"Rule: {rule['name']}",
-                        message=f"Agent {agent_id}: {name} = {value:.1f} ({op} {threshold})", source=f"rule:{rule['id']}", configs=configs)
-                except: pass
-                try:
-                    from api_gateway.webhook_sender import send_to_all_webhooks
-                    await send_to_all_webhooks(webhooks, "warning", f"Rule: {rule['name']}",
-                        f"Agent {agent_id}: {name} = {value:.1f} ({op} {threshold})", f"rule:{rule['id']}")
-                except: pass
-
-# ─── Process Monitoring ───
-
-@app.post("/api/v1/processes", dependencies=[Depends(require_api_key)])
-async def receive_processes(request: Request):
-    data = await request.json()
-    agent_id = data.get("agent_id")
-    processes = data.get("processes", [])
-    if not agent_id:
-        raise HTTPException(400, "agent_id required")
-    save_process_snapshot(agent_id, processes)
-    return {"status": "ok", "received": len(processes)}
+# Alert logic and process ingestion moved to Alert Worker and Data Collector services
 
 @app.get("/api/v1/processes", dependencies=[Depends(require_auth)])
 async def query_processes(agent_id: str = None):
@@ -722,17 +553,7 @@ async def query_processes(agent_id: str = None):
     result = get_process_snapshot(agent_id)
     return result
 
-# ─── Traces ───
-
-@app.post("/api/v1/traces", dependencies=[Depends(require_api_key)])
-async def receive_traces(request: Request):
-    data = await request.json()
-    agent_id = data.get("agent_id")
-    traces = data.get("traces", [])
-    if not agent_id:
-        raise HTTPException(400, "agent_id required")
-    insert_traces(agent_id, traces)
-    return {"status": "ok", "received": len(traces)}
+# Trace ingestion moved to Data Collector service
 
 @app.get("/api/v1/traces", dependencies=[Depends(require_auth)])
 async def query_traces(agent_id: str = None, last_hours: int = 24, limit: int = 100,
@@ -766,192 +587,7 @@ async def service_metrics(service_name: str, last_hours: int = Query(24), limit:
     metrics = get_metrics_by_service(service_name, last_hours=last_hours, limit=limit)
     return {"metrics": metrics, "total": len(metrics), "service": service_name}
 
-# ════════════════════════════════════════════════
-# OTLP HTTP RECEIVER (OpenTelemetry Standard)
-# Supports both protobuf and JSON
-# No auth required — apps just set OTEL_EXPORTER_OTLP_ENDPOINT
-# ════════════════════════════════════════════════
-
-def _pb_attr_value(kv):
-    """Extract value from protobuf KeyValue."""
-    v = kv.value
-    if v.HasField("string_value"): return v.string_value
-    if v.HasField("int_value"): return v.int_value
-    if v.HasField("double_value"): return v.double_value
-    if v.HasField("bool_value"): return v.bool_value
-    return ""
-
-def _pb_get_service_name(resource) -> str:
-    """Extract service.name from protobuf Resource."""
-    for kv in resource.attributes:
-        if kv.key == "service.name":
-            return _pb_attr_value(kv) or "unknown-service"
-    return "unknown-service"
-
-def _otlp_ensure_agent(service_name: str):
-    """Auto-register an application agent from OTel service name."""
-    agent_id = f"otel-{service_name}"
-    get_or_create_agent(agent_id, service_name, "opentelemetry", "", "default", agent_category="application")
-    return agent_id
-
-@app.post("/v1/traces")
-async def otlp_receive_traces(request: Request):
-    """OTLP HTTP trace receiver — supports protobuf and JSON."""
-    content_type = request.headers.get("content-type", "")
-    raw = await request.body()
-    if not raw:
-        return JSONResponse(status_code=200, content={})
-    all_traces = []
-    try:
-        if "protobuf" in content_type or "proto" in content_type:
-            from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
-            req = ExportTraceServiceRequest()
-            req.ParseFromString(raw)
-            for rs in req.resource_spans:
-                service_name = _pb_get_service_name(rs.resource)
-                agent_id = _otlp_ensure_agent(service_name)
-                for ss in rs.scope_spans:
-                    for span in ss.spans:
-                        duration_ms = (span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000
-                        status = "error" if span.status.code == 2 else "ok"
-                        attrs = {kv.key: str(_pb_attr_value(kv)) for kv in span.attributes}
-                        all_traces.append({
-                            "trace_id": span.trace_id.hex(), "span_id": span.span_id.hex(),
-                            "span_name": span.name, "service_name": service_name,
-                            "duration_ms": round(duration_ms, 2), "status": status,
-                            "attributes": attrs, "agent_id": agent_id,
-                        })
-        else:
-            body = json.loads(raw)
-            for rs in body.get("resourceSpans", []):
-                resource = rs.get("resource", {})
-                svc_attrs = resource.get("attributes", [])
-                service_name = next((a.get("value",{}).get("stringValue","") for a in svc_attrs if a.get("key") == "service.name"), "unknown-service")
-                agent_id = _otlp_ensure_agent(service_name)
-                for ss in rs.get("scopeSpans", []):
-                    for span in ss.get("spans", []):
-                        start_ns, end_ns = int(span.get("startTimeUnixNano", 0)), int(span.get("endTimeUnixNano", 0))
-                        duration_ms = (end_ns - start_ns) / 1_000_000 if start_ns and end_ns else 0
-                        status = "error" if span.get("status", {}).get("code", 0) == 2 else "ok"
-                        attrs = {a["key"]: str(a.get("value",{}).get("stringValue","") or a.get("value",{}).get("intValue","")) for a in span.get("attributes",[])}
-                        all_traces.append({
-                            "trace_id": span.get("traceId", ""), "span_id": span.get("spanId", ""),
-                            "span_name": span.get("name", ""), "service_name": service_name,
-                            "duration_ms": round(duration_ms, 2), "status": status,
-                            "attributes": attrs, "agent_id": agent_id,
-                        })
-    except Exception as e:
-        logger.error(f"OTLP traces parse error: {e}")
-        return JSONResponse(status_code=200, content={})
-
-    if all_traces:
-        by_agent: dict[str, list] = {}
-        for t in all_traces:
-            aid = t.pop("agent_id")
-            by_agent.setdefault(aid, []).append(t)
-        for aid, traces in by_agent.items():
-            insert_traces(aid, traces)
-        logger.info(f"OTLP: Received {len(all_traces)} spans from {len(by_agent)} services")
-    return JSONResponse(status_code=200, content={})
-
-@app.post("/v1/metrics")
-async def otlp_receive_metrics(request: Request):
-    """OTLP HTTP metrics receiver — supports protobuf and JSON."""
-    content_type = request.headers.get("content-type", "")
-    raw = await request.body()
-    if not raw:
-        return JSONResponse(status_code=200, content={})
-    all_metrics: dict[str, list] = {}
-    try:
-        if "protobuf" in content_type or "proto" in content_type:
-            from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
-            req = ExportMetricsServiceRequest()
-            req.ParseFromString(raw)
-            for rm in req.resource_metrics:
-                service_name = _pb_get_service_name(rm.resource)
-                agent_id = _otlp_ensure_agent(service_name)
-                for sm in rm.scope_metrics:
-                    for metric in sm.metrics:
-                        data_points = list(metric.gauge.data_points) or list(metric.sum.data_points)
-                        for dp in data_points:
-                            value = dp.as_double or dp.as_int
-                            labels = {kv.key: str(_pb_attr_value(kv)) for kv in dp.attributes}
-                            labels["service_name"] = service_name
-                            all_metrics.setdefault(agent_id, []).append({
-                                "metric_name": metric.name, "metric_value": float(value), "labels": labels,
-                            })
-        else:
-            body = json.loads(raw)
-            for rm in body.get("resourceMetrics", []):
-                svc_attrs = rm.get("resource", {}).get("attributes", [])
-                service_name = next((a.get("value",{}).get("stringValue","") for a in svc_attrs if a.get("key") == "service.name"), "unknown-service")
-                agent_id = _otlp_ensure_agent(service_name)
-                for sm in rm.get("scopeMetrics", []):
-                    for metric in sm.get("metrics", []):
-                        for key in ("gauge", "sum"):
-                            for dp in metric.get(key, {}).get("dataPoints", []):
-                                value = dp.get("asDouble") or dp.get("asInt", 0)
-                                labels = {a["key"]: str(a.get("value",{}).get("stringValue","")) for a in dp.get("attributes",[])}
-                                labels["service_name"] = service_name
-                                all_metrics.setdefault(agent_id, []).append({
-                                    "metric_name": metric.get("name",""), "metric_value": float(value) if value else 0.0, "labels": labels,
-                                })
-    except Exception as e:
-        logger.error(f"OTLP metrics parse error: {e}")
-        return JSONResponse(status_code=200, content={})
-
-    for agent_id, metrics in all_metrics.items():
-        insert_metrics(agent_id, metrics)
-        logger.info(f"OTLP: Received {len(metrics)} metrics from {agent_id}")
-    return JSONResponse(status_code=200, content={})
-
-@app.post("/v1/logs")
-async def otlp_receive_logs(request: Request):
-    """OTLP HTTP logs receiver — supports protobuf and JSON."""
-    content_type = request.headers.get("content-type", "")
-    raw = await request.body()
-    if not raw:
-        return JSONResponse(status_code=200, content={})
-    all_logs: dict[str, list] = {}
-    try:
-        if "protobuf" in content_type or "proto" in content_type:
-            from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
-            req = ExportLogsServiceRequest()
-            req.ParseFromString(raw)
-            for rl in req.resource_logs:
-                service_name = _pb_get_service_name(rl.resource)
-                agent_id = _otlp_ensure_agent(service_name)
-                for sl in rl.scope_logs:
-                    for lr in sl.log_records:
-                        severity = lr.severity_text.lower() if lr.severity_text else "info"
-                        message = lr.body.string_value if lr.body.HasField("string_value") else str(lr.body)
-                        all_logs.setdefault(agent_id, []).append({
-                            "log_level": severity if severity in ("debug","info","warning","error","critical") else "info",
-                            "message": message, "source": service_name, "namespace": "", "pod_name": "",
-                        })
-        else:
-            body = json.loads(raw)
-            for rl in body.get("resourceLogs", []):
-                svc_attrs = rl.get("resource", {}).get("attributes", [])
-                service_name = next((a.get("value",{}).get("stringValue","") for a in svc_attrs if a.get("key") == "service.name"), "unknown-service")
-                agent_id = _otlp_ensure_agent(service_name)
-                for sl in rl.get("scopeLogs", []):
-                    for lr in sl.get("logRecords", []):
-                        severity = lr.get("severityText", "info").lower()
-                        body_val = lr.get("body", {})
-                        message = body_val.get("stringValue", "") if isinstance(body_val, dict) else str(body_val)
-                        all_logs.setdefault(agent_id, []).append({
-                            "log_level": severity if severity in ("debug","info","warning","error","critical") else "info",
-                            "message": message, "source": service_name, "namespace": "", "pod_name": "",
-                        })
-    except Exception as e:
-        logger.error(f"OTLP logs parse error: {e}")
-        return JSONResponse(status_code=200, content={})
-
-    for agent_id, logs in all_logs.items():
-        insert_logs(agent_id, logs)
-        logger.info(f"OTLP: Received {len(logs)} logs from {agent_id}")
-    return JSONResponse(status_code=200, content={})
+# OTLP receivers moved to Data Collector service
 
 
 @app.get("/api/v1/storage/stats", dependencies=[Depends(require_auth)])
