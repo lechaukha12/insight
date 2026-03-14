@@ -9,13 +9,13 @@ import {
 import { getChartMetrics, getChartEvents } from '../lib/api';
 
 const COLORS = {
-    cpu: '#0165a7',
-    memory: '#e6a800',
-    disk: '#d4380d',
+    cpu: '#2563eb',
+    memory: '#f59e0b',
+    disk: '#ef4444',
     critical: '#991b1b',
-    error: '#dc2626',
-    warning: '#b45309',
-    info: '#0165a7',
+    error: '#ef4444',
+    warning: '#f59e0b',
+    info: '#3b82f6',
 };
 
 const chartTooltipStyle = {
@@ -114,33 +114,34 @@ export function MetricsLineChart({ agentId = null, lastHours = 6, height = 280 }
 
     return (
         <ResponsiveContainer width="100%" height={height}>
-            <AreaChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+            <AreaChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
                 <defs>
                     <linearGradient id="gradCpu" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={COLORS.cpu} stopOpacity={0.15} />
-                        <stop offset="95%" stopColor={COLORS.cpu} stopOpacity={0} />
+                        <stop offset="5%" stopColor={COLORS.cpu} stopOpacity={0.3} />
+                        <stop offset="95%" stopColor={COLORS.cpu} stopOpacity={0.02} />
                     </linearGradient>
                     <linearGradient id="gradMem" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={COLORS.memory} stopOpacity={0.15} />
-                        <stop offset="95%" stopColor={COLORS.memory} stopOpacity={0} />
+                        <stop offset="5%" stopColor={COLORS.memory} stopOpacity={0.3} />
+                        <stop offset="95%" stopColor={COLORS.memory} stopOpacity={0.02} />
                     </linearGradient>
                     <linearGradient id="gradDisk" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={COLORS.disk} stopOpacity={0.15} />
-                        <stop offset="95%" stopColor={COLORS.disk} stopOpacity={0} />
+                        <stop offset="5%" stopColor={COLORS.disk} stopOpacity={0.3} />
+                        <stop offset="95%" stopColor={COLORS.disk} stopOpacity={0.02} />
                     </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(201,177,0,0.15)" />
-                <XAxis dataKey="time" tickFormatter={formatTime} tick={{ fontSize: 11, fill: '#7a7050' }} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#7a7050' }} tickFormatter={(v) => `${v}%`} />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(201,177,0,0.1)" vertical={false} />
+                <XAxis dataKey="time" tickFormatter={formatTime} tick={{ fontSize: 11, fill: '#7a7050' }} axisLine={false} tickLine={false} />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#7a7050' }} tickFormatter={(v) => `${v}%`} axisLine={false} tickLine={false} />
                 <Tooltip
                     contentStyle={chartTooltipStyle}
                     formatter={(value, name) => [`${value}%`, name.replace('_', ' ').replace('percent', '').trim()]}
                     labelFormatter={formatTime}
+                    cursor={{ stroke: 'rgba(1,101,167,0.15)', strokeWidth: 1 }}
                 />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Area type="monotone" dataKey="cpu_percent" name="CPU" stroke={COLORS.cpu} fill="url(#gradCpu)" strokeWidth={2} dot={false} />
-                <Area type="monotone" dataKey="memory_percent" name="Memory" stroke={COLORS.memory} fill="url(#gradMem)" strokeWidth={2} dot={false} />
-                <Area type="monotone" dataKey="disk_percent" name="Disk" stroke={COLORS.disk} fill="url(#gradDisk)" strokeWidth={2} dot={false} />
+                <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+                <Area type="natural" dataKey="cpu_percent" name="CPU" stroke={COLORS.cpu} fill="url(#gradCpu)" strokeWidth={2.5} dot={false} activeDot={{ r: 4, strokeWidth: 0 }} />
+                <Area type="natural" dataKey="memory_percent" name="Memory" stroke={COLORS.memory} fill="url(#gradMem)" strokeWidth={2.5} dot={false} activeDot={{ r: 4, strokeWidth: 0 }} />
+                <Area type="natural" dataKey="disk_percent" name="Disk" stroke={COLORS.disk} fill="url(#gradDisk)" strokeWidth={2.5} dot={false} activeDot={{ r: 4, strokeWidth: 0 }} />
             </AreaChart>
         </ResponsiveContainer>
     );
@@ -184,16 +185,16 @@ export function EventsBarChart({ lastHours = 24, height = 220 }) {
 
     return (
         <ResponsiveContainer width="100%" height={height}>
-            <BarChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(201,177,0,0.15)" />
-                <XAxis dataKey="hour" tickFormatter={formatHour} tick={{ fontSize: 11, fill: '#7a7050' }} />
-                <YAxis tick={{ fontSize: 11, fill: '#7a7050' }} allowDecimals={false} />
-                <Tooltip contentStyle={chartTooltipStyle} labelFormatter={formatHour} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="critical" name="Critical" fill={COLORS.critical} radius={[3, 3, 0, 0]} />
-                <Bar dataKey="error" name="Error" fill={COLORS.error} radius={[3, 3, 0, 0]} />
-                <Bar dataKey="warning" name="Warning" fill={COLORS.warning} radius={[3, 3, 0, 0]} />
-                <Bar dataKey="info" name="Info" fill={COLORS.info} radius={[3, 3, 0, 0]} />
+            <BarChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 5 }} barCategoryGap="25%">
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(201,177,0,0.1)" vertical={false} />
+                <XAxis dataKey="hour" tickFormatter={formatHour} tick={{ fontSize: 11, fill: '#7a7050' }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: '#7a7050' }} allowDecimals={false} axisLine={false} tickLine={false} />
+                <Tooltip contentStyle={chartTooltipStyle} labelFormatter={formatHour} cursor={{ fill: 'rgba(1,101,167,0.04)' }} />
+                <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+                <Bar dataKey="critical" name="Critical" stackId="events" fill={COLORS.critical} radius={[0, 0, 0, 0]} />
+                <Bar dataKey="error" name="Error" stackId="events" fill={COLORS.error} />
+                <Bar dataKey="warning" name="Warning" stackId="events" fill={COLORS.warning} />
+                <Bar dataKey="info" name="Info" stackId="events" fill={COLORS.info} radius={[4, 4, 0, 0]} />
             </BarChart>
         </ResponsiveContainer>
     );

@@ -384,3 +384,118 @@ def get_k8s_events(namespace: str = None) -> list[dict]:
         return result
     return _cached(f"k8s:events:{namespace}", _fetch, ttl=15)  # shorter TTL for events
 
+
+# ─── Pod Detail ───
+
+def get_k8s_pod_detail(namespace: str, pod_name: str) -> dict:
+    """Get detailed pod information including spec, status, containers, conditions, and events."""
+    _ensure_k8s()
+    try:
+        pod = _v1.read_namespaced_pod(pod_name, namespace)
+        containers = []
+        for c in (pod.spec.containers or []):
+            cs = None
+            for s in (pod.status.container_statuses or []):
+                if s.name == c.name:
+                    cs = s
+                    break
+            state = "unknown"
+            if cs:
+                if cs.state.running:
+                    state = "running"
+                elif cs.state.waiting:
+                    state = f"waiting: {cs.state.waiting.reason or ''}"
+                elif cs.state.terminated:
+                    state = f"terminated: {cs.state.terminated.reason or ''}"
+            containers.append({
+                "name": c.name,
+                "image": c.image,
+                "ports": [{"port": p.container_port, "protocol": p.protocol or "TCP"} for p in (c.ports or [])],
+                "state": state,
+                "ready": cs.ready if cs else False,
+                "restart_count": cs.restart_count if cs else 0,
+                "resources": {
+                    "requests": {k: str(v) for k, v in (c.resources.requests or {}).items()} if c.resources and c.resources.requests else {},
+                    "limits": {k: str(v) for k, v in (c.resources.limits or {}).items()} if c.resources and c.resources.limits else {},
+                },
+            })
+        conditions = []
+        for cond in (pod.status.conditions or []):
+            conditions.append({
+                "type": cond.type, "status": cond.status,
+                "reason": cond.reason or "", "message": cond.message or "",
+                "last_transition": str(cond.last_transition_time or ""),
+            })
+        # Get pod events
+        events = []
+        try:
+            evts = _v1.list_namespaced_event(namespace, field_selector=f"involvedObject.name={pod_name}")
+            for e in evts.items:
+                events.append({
+                    "type": e.type or "Normal", "reason": e.reason or "",
+                    "message": e.message or "", "count": e.count or 1,
+                    "last_seen": _age(e.last_timestamp),
+                })
+        except Exception:
+            pass
+        return {
+            "name": pod.metadata.name,
+            "namespace": pod.metadata.namespace,
+            "node": pod.spec.node_name or "",
+            "phase": pod.status.phase or "",
+            "pod_ip": pod.status.pod_ip or "",
+            "host_ip": pod.status.host_ip or "",
+            "start_time": str(pod.status.start_time or ""),
+            "labels": dict(pod.metadata.labels or {}),
+            "annotations": {k: v[:200] for k, v in (pod.metadata.annotations or {}).items()},
+            "service_account": pod.spec.service_account_name or "",
+            "containers": containers,
+            "conditions": conditions,
+            "events": events,
+            "age": _age(pod.metadata.creation_timestamp),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get pod detail {namespace}/{pod_name}: {e}")
+        return {"error": str(e)}
+
+
+# ─── Pod Logs ───
+
+def get_k8s_pod_logs(namespace: str, pod_name: str, container: str = None, tail_lines: int = 100) -> dict:
+    """Get pod container logs."""
+    _ensure_k8s()
+    try:
+        kwargs = {"name": pod_name, "namespace": namespace, "tail_lines": tail_lines}
+        if container:
+            kwargs["container"] = container
+        logs = _v1.read_namespaced_pod_log(**kwargs)
+        lines = logs.split("\n") if logs else []
+        return {
+            "pod": pod_name,
+            "namespace": namespace,
+            "container": container or "default",
+            "lines": lines,
+            "total_lines": len(lines),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get pod logs {namespace}/{pod_name}: {e}")
+        return {"error": str(e)}
+
+
+# ─── ConfigMap Detail ───
+
+def get_k8s_configmap_detail(namespace: str, cm_name: str) -> dict:
+    """Get ConfigMap data."""
+    _ensure_k8s()
+    try:
+        cm = _v1.read_namespaced_config_map(cm_name, namespace)
+        return {
+            "name": cm.metadata.name,
+            "namespace": cm.metadata.namespace,
+            "data": dict(cm.data or {}),
+            "labels": dict(cm.metadata.labels or {}),
+            "age": _age(cm.metadata.creation_timestamp),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get configmap {namespace}/{cm_name}: {e}")
+        return {"error": str(e)}

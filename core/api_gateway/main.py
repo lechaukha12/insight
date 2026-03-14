@@ -409,7 +409,7 @@ async def dashboard_v2_summary(cluster_id: str = Query(None), from_time: str = Q
     for cat, info in categories.items():
         agent_ids = [a["id"] for a in info["agents"]]
         if cat == "system":
-            # Avg CPU, Memory, Disk from latest metrics
+            # Avg CPU (percentage), Memory & Disk (raw bytes → GB)
             cpus, mems, disks = [], [], []
             for aid in agent_ids:
                 for m in latest_metrics.get(aid, []):
@@ -419,8 +419,17 @@ async def dashboard_v2_summary(cluster_id: str = Query(None), from_time: str = Q
                     elif "memory" in name: mems.append(val)
                     elif "disk" in name: disks.append(val)
             info["avg_cpu"] = round(sum(cpus) / len(cpus), 1) if cpus else None
-            info["avg_memory"] = round(sum(mems) / len(mems), 1) if mems else None
-            info["avg_disk"] = round(sum(disks) / len(disks), 1) if disks else None
+            # Memory/Disk: if values > 1000, they are bytes → convert to GB
+            if mems:
+                avg_mem = sum(mems) / len(mems)
+                info["avg_memory_gb"] = round(avg_mem / (1024**3), 1) if avg_mem > 1000 else round(avg_mem, 1)
+            else:
+                info["avg_memory_gb"] = None
+            if disks:
+                avg_disk = sum(disks) / len(disks)
+                info["avg_disk_gb"] = round(avg_disk / (1024**3), 1) if avg_disk > 1000 else round(avg_disk, 1)
+            else:
+                info["avg_disk_gb"] = None
         elif cat == "kubernetes":
             # Aggregate K8s metrics: nodes, pods, warnings
             nodes, pods, warnings = 0, 0, 0
@@ -804,6 +813,21 @@ async def k8s_ingresses(ns: str):
     from api_gateway.k8s_resources import get_k8s_ingresses
     ns_param = None if ns == "_all" else ns
     return {"ingresses": get_k8s_ingresses(ns_param)}
+
+@app.get("/api/v1/k8s/namespaces/{ns}/pods/{pod}/detail", dependencies=[Depends(require_auth)])
+async def k8s_pod_detail(ns: str, pod: str):
+    from api_gateway.k8s_resources import get_k8s_pod_detail
+    return get_k8s_pod_detail(ns, pod)
+
+@app.get("/api/v1/k8s/namespaces/{ns}/pods/{pod}/logs", dependencies=[Depends(require_auth)])
+async def k8s_pod_logs(ns: str, pod: str, container: str = None, tail_lines: int = 100):
+    from api_gateway.k8s_resources import get_k8s_pod_logs
+    return get_k8s_pod_logs(ns, pod, container=container, tail_lines=min(tail_lines, 500))
+
+@app.get("/api/v1/k8s/namespaces/{ns}/configmaps/{cm}", dependencies=[Depends(require_auth)])
+async def k8s_configmap_detail(ns: str, cm: str):
+    from api_gateway.k8s_resources import get_k8s_configmap_detail
+    return get_k8s_configmap_detail(ns, cm)
 
 # ════════════════════════════════════════════════
 # AI CHATBOT — Gemini-Powered Monitoring Assistant

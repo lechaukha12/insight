@@ -377,6 +377,73 @@ def get_webhooks_summary() -> list[dict]:
     ]
 
 
+# ──── 12. Kubernetes Resources ────
+
+def get_k8s_pod_detail_mcp(namespace: str, pod_name: str) -> dict:
+    """Get detailed info about a specific Kubernetes pod including containers, status, conditions, events, and resource usage.
+    Args:
+        namespace: The Kubernetes namespace of the pod.
+        pod_name: The name of the pod to inspect.
+    Returns pod details with containers, ports, state, restart count, conditions, and events."""
+    try:
+        from api_gateway.k8s_resources import get_k8s_pod_detail
+        return get_k8s_pod_detail(namespace, pod_name)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_k8s_pod_logs_mcp(namespace: str, pod_name: str, tail_lines: int) -> dict:
+    """Get the last N lines of logs from a Kubernetes pod.
+    Args:
+        namespace: The Kubernetes namespace of the pod.
+        pod_name: The name of the pod to get logs from.
+        tail_lines: Number of log lines to return (default 50, max 200).
+    Returns log lines from the pod container."""
+    try:
+        from api_gateway.k8s_resources import get_k8s_pod_logs
+        tail_lines = min(tail_lines or 50, 200)
+        result = get_k8s_pod_logs(namespace, pod_name, tail_lines=tail_lines)
+        # Truncate to avoid huge payloads
+        if "lines" in result and len(result["lines"]) > 50:
+            result["lines"] = result["lines"][-50:]
+            result["truncated"] = True
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_k8s_configmaps_mcp(namespace: str) -> list:
+    """Get list of ConfigMaps in a Kubernetes namespace.
+    Args:
+        namespace: The Kubernetes namespace. Use '_all' for all namespaces.
+    Returns a list of ConfigMap names with namespace and age."""
+    try:
+        from api_gateway.k8s_resources import get_k8s_configmaps
+        ns = None if namespace == "_all" else namespace
+        return get_k8s_configmaps(ns)
+    except Exception as e:
+        return [{"error": str(e)}]
+
+
+def get_k8s_configmap_detail_mcp(namespace: str, configmap_name: str) -> dict:
+    """Get the content/data of a specific ConfigMap.
+    Args:
+        namespace: The Kubernetes namespace of the ConfigMap.
+        configmap_name: Name of the ConfigMap to inspect.
+    Returns the ConfigMap data (key-value pairs), labels, and age."""
+    try:
+        from api_gateway.k8s_resources import get_k8s_configmap_detail
+        result = get_k8s_configmap_detail(namespace, configmap_name)
+        # Truncate large values
+        if "data" in result:
+            for k, v in result["data"].items():
+                if len(str(v)) > 500:
+                    result["data"][k] = str(v)[:500] + "...(truncated)"
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ═══════════════════════════════════════════════════════════
 # MCP Server — orchestrates Gemini + tools
 # Token optimization: cache + smart routing + compression
@@ -393,6 +460,8 @@ MCP_TOOLS = [
     get_trace_overview, get_application_services,
     get_clusters, get_storage_info,
     get_notification_rules, get_alert_channels, get_webhooks_summary,
+    get_k8s_pod_detail_mcp, get_k8s_pod_logs_mcp,
+    get_k8s_configmaps_mcp, get_k8s_configmap_detail_mcp,
 ]
 
 # ─── Tool Groups for Smart Context Routing ───
@@ -411,6 +480,8 @@ TOOL_ROUTING = {
     "rule|notification|thông báo|quy tắc": [get_notification_rules, get_alert_channels],
     "webhook": [get_webhooks_summary],
     "process|tiến trình": [get_process_list],
+    "pod|container|k8s|kubernetes": [get_k8s_pod_detail_mcp, get_k8s_pod_logs_mcp],
+    "configmap|config map|cấu hình": [get_k8s_configmaps_mcp, get_k8s_configmap_detail_mcp],
     "overview": [
         get_system_agents, get_system_metrics, get_event_counts, get_recent_events,
         get_trace_overview, get_application_services,

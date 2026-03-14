@@ -111,27 +111,36 @@ export default function DashboardPage() {
                 {/* Card Content — Category-specific */}
                 {cat === 'system' && (
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                    {[
-                      { label: 'CPU', value: info.avg_cpu, color: '#0165a7' },
-                      { label: 'Memory', value: info.avg_memory, color: '#e6a800' },
-                      { label: 'Disk', value: info.avg_disk, color: '#d4380d' },
-                    ].map(m => (
-                      <div key={m.label} style={{ textAlign: 'center' }}>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{m.label}</div>
-                        <div style={{ fontSize: 18, fontWeight: 700, color: m.value > 80 ? '#dc2626' : m.color }}>
-                          {m.value != null ? `${m.value}%` : '—'}
-                        </div>
-                        {m.value != null && (
-                          <div style={{ height: 4, borderRadius: 2, background: '#e5e7eb', marginTop: 6 }}>
-                            <div style={{
-                              height: '100%', borderRadius: 2, width: `${Math.min(m.value, 100)}%`,
-                              background: m.value > 80 ? '#dc2626' : m.value > 60 ? '#f59e0b' : m.color,
-                              transition: 'width 0.5s ease',
-                            }} />
-                          </div>
-                        )}
+                    {/* CPU with progress bar */}
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>CPU</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: (info.avg_cpu || 0) > 80 ? '#dc2626' : '#0165a7' }}>
+                        {info.avg_cpu != null ? `${info.avg_cpu}%` : '—'}
                       </div>
-                    ))}
+                      {info.avg_cpu != null && (
+                        <div style={{ height: 4, borderRadius: 2, background: '#e5e7eb', marginTop: 6 }}>
+                          <div style={{
+                            height: '100%', borderRadius: 2, width: `${Math.min(info.avg_cpu, 100)}%`,
+                            background: info.avg_cpu > 80 ? '#dc2626' : info.avg_cpu > 60 ? '#f59e0b' : '#0165a7',
+                            transition: 'width 0.5s ease',
+                          }} />
+                        </div>
+                      )}
+                    </div>
+                    {/* Memory in GB */}
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Memory</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: '#e6a800' }}>
+                        {info.avg_memory_gb != null ? `${info.avg_memory_gb} GB` : '—'}
+                      </div>
+                    </div>
+                    {/* Disk in GB */}
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Disk</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: '#d4380d' }}>
+                        {info.avg_disk_gb != null ? `${info.avg_disk_gb} GB` : '—'}
+                      </div>
+                    </div>
                   </div>
                 )}
 
