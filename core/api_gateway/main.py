@@ -1126,7 +1126,7 @@ async def list_gemini_models(user: dict = Depends(require_role(["admin"]))):
 
 @app.post("/api/v1/chat")
 async def ai_chat(request: Request, user: dict = Depends(require_role(["admin"]))):
-    """AI Chat endpoint — queries monitoring data and sends to Gemini."""
+    """AI Chat endpoint — uses MCP Server for monitoring data access."""
     body = await request.json()
     user_message = body.get("message", "").strip()
     history = body.get("history", [])
@@ -1138,86 +1138,14 @@ async def ai_chat(request: Request, user: dict = Depends(require_role(["admin"])
     if not api_key or not enabled:
         raise HTTPException(400, "AI Assistant chưa được cấu hình. Vui lòng thêm Gemini API Key trong Settings → AI Assistant")
 
-    # ─── Gather monitoring context ───
-    context_parts = []
-    try:
-        # Agents summary
-        agents = list_agents() or []
-        online = [a for a in agents if a.get("status") == "online"]
-        offline = [a for a in agents if a.get("status") != "online"]
-        context_parts.append(f"=== AGENTS ({len(agents)} total, {len(online)} online, {len(offline)} offline) ===")
-        for a in agents[:20]:
-            context_parts.append(f"  - {a.get('hostname','?')} [{a.get('agent_type','?')}] status={a.get('status','?')} category={a.get('agent_category','?')}")
-
-        # Recent events (last 24h)
-        events = get_events(limit=10) or []
-        if events:
-            context_parts.append(f"\n=== RECENT EVENTS ({len(events)} latest) ===")
-            for e in events[:10]:
-                context_parts.append(f"  - [{e.get('severity','?')}] {e.get('title','?')} — {e.get('source','?')} ({e.get('timestamp','')})")
-
-        # Trace summary
-        trace_summary = get_trace_summary(last_hours=24) or {}
-        if trace_summary:
-            context_parts.append(f"\n=== TRACE SUMMARY (24h) ===")
-            context_parts.append(f"  Total spans: {trace_summary.get('total_spans', 0)}")
-            context_parts.append(f"  Error spans: {trace_summary.get('error_spans', 0)}")
-            for svc in (trace_summary.get('services', []) or [])[:10]:
-                context_parts.append(f"  - {svc.get('service_name','?')}: {svc.get('span_count',0)} spans, avg={svc.get('avg_duration_ms',0):.1f}ms, errors={svc.get('error_count',0)}")
-
-        # Recent error logs
-        error_logs = get_logs(log_level="error", limit=5) or []
-        if error_logs:
-            context_parts.append(f"\n=== RECENT ERROR LOGS ===")
-            for l in error_logs[:5]:
-                context_parts.append(f"  - [{l.get('source','?')}] {l.get('message','?')[:150]}")
-
-        # Latest metrics per agent
-        latest = get_latest_metrics_per_agent() or []
-        if latest:
-            context_parts.append(f"\n=== SYSTEM METRICS (latest per agent) ===")
-            for m in latest[:10]:
-                context_parts.append(f"  - {m.get('hostname','?')}: CPU={m.get('cpu_percent','?')}%, RAM={m.get('memory_percent','?')}%, Disk={m.get('disk_percent','?')}%")
-
-    except Exception as e:
-        logger.error(f"Chat context gather error: {e}")
-        context_parts.append(f"(Error gathering some context: {e})")
-
-    monitoring_context = "\n".join(context_parts)
-
-    # ─── Call Gemini ───
-    system_prompt = """Bạn là Insight AI Assistant — trợ lý giám sát hệ thống thông minh.
-Bạn có quyền truy cập vào dữ liệu monitoring realtime bên dưới.
-Hãy phân tích và trả lời câu hỏi của admin bằng tiếng Việt.
-Nếu phát hiện vấn đề, hãy đề xuất giải pháp cụ thể.
-Trả lời ngắn gọn, chuyên nghiệp, sử dụng markdown formatting.
-Đừng lặp lại toàn bộ dữ liệu — chỉ trích dẫn phần liên quan.
-
-MONITORING DATA:
-""" + monitoring_context
+    model = get_setting("gemini_model", "gemini-2.0-flash")
 
     try:
-        from google import genai
-        client = genai.Client(api_key=api_key)
-        model = get_setting("gemini_model", "gemini-2.0-flash")
-
-        # Build conversation
-        contents = []
-        for h in history[-10:]:  # Keep last 10 messages
-            contents.append({"role": h.get("role", "user"), "parts": [{"text": h.get("content", "")}]})
-        contents.append({"role": "user", "parts": [{"text": user_message}]})
-
-        response = client.models.generate_content(
-            model=model,
-            contents=contents,
-            config={"system_instruction": system_prompt, "max_output_tokens": 2048, "temperature": 0.7},
-        )
-        reply = response.text
+        from api_gateway.mcp_server import chat as mcp_chat
+        reply = await mcp_chat(api_key, model, user_message, history)
         return {"reply": reply}
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Gemini API error: {e}")
+        logger.error(f"MCP Chat error: {e}")
         raise HTTPException(500, f"AI error: {str(e)}")
 
 if __name__ == "__main__":
