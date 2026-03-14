@@ -83,15 +83,17 @@ def get_error_logs(limit: int) -> list[dict]:
     Returns a list of log entries with source, message, severity, and timestamp."""
     from shared.database.db import get_logs
     limit = min(limit or 10, 20)
-    logs = get_logs(log_level="error", limit=limit) or []
+    all_logs = get_logs(limit=200) or []
+    # Filter for error/critical logs
+    error_logs = [l for l in all_logs if l.get("severity", "").lower() in ("error", "critical", "fatal")]
     return [
         {
             "source": l.get("source", ""),
             "message": str(l.get("message", ""))[:300],
-            "severity": l.get("severity", l.get("log_level", "")),
+            "severity": l.get("severity", ""),
             "timestamp": str(l.get("timestamp", "")),
         }
-        for l in logs
+        for l in error_logs[:limit]
     ]
 
 
@@ -177,65 +179,36 @@ async def chat(api_key: str, model_name: str, user_message: str, history: list[d
         parts=[types.Part.from_text(text=user_message)]
     ))
 
-    # Config with tools but NO automatic function calling
+    # Gather monitoring context via MCP tools
+    context_parts = []
+    for fn in MCP_TOOLS:
+        try:
+            if fn.__name__ == "get_recent_events":
+                data = fn(severity="", limit=10)
+            elif fn.__name__ == "get_error_logs":
+                data = fn(limit=10)
+            elif fn.__name__ == "get_trace_overview":
+                data = fn(last_hours=24)
+            else:
+                data = fn()
+            context_parts.append(f"[{fn.__name__}]: {json.dumps(data, ensure_ascii=False, default=str)[:2000]}")
+            logger.info(f"MCP tool executed: {fn.__name__}")
+        except Exception as e:
+            logger.warning(f"MCP tool {fn.__name__} failed: {e}")
+            context_parts.append(f"[{fn.__name__}]: error - {e}")
+
+    monitoring_context = "\n".join(context_parts)
+
     config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
-        tools=MCP_TOOLS,
+        system_instruction=SYSTEM_PROMPT + "\n\nMONITORING DATA (via MCP Server):\n" + monitoring_context,
         temperature=0.7,
         max_output_tokens=2048,
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
 
-    # Manual function calling loop (max 5 rounds)
-    for _ in range(5):
-        response = client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=config,
-        )
-
-        # Check if model wants to call functions
-        function_calls = []
-        if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.function_call:
-                    function_calls.append(part)
-
-        if not function_calls:
-            # No function calls — return text response
-            return response.text or "Không thể xử lý yêu cầu."
-
-        # Add model's response (with function calls) to contents
-        contents.append(response.candidates[0].content)
-
-        # Execute each function call and build response parts
-        function_response_parts = []
-        for fc_part in function_calls:
-            fn_name = fc_part.function_call.name
-            fn_args = dict(fc_part.function_call.args) if fc_part.function_call.args else {}
-
-            logger.info(f"MCP tool call: {fn_name}({fn_args})")
-
-            if fn_name in tool_map:
-                try:
-                    result = tool_map[fn_name](**fn_args)
-                except Exception as e:
-                    result = {"error": str(e)}
-            else:
-                result = {"error": f"Unknown tool: {fn_name}"}
-
-            function_response_parts.append(
-                types.Part.from_function_response(
-                    name=fn_name,
-                    response={"result": result},
-                )
-            )
-
-        # Add function responses to contents
-        contents.append(types.Content(
-            role="user",
-            parts=function_response_parts,
-        ))
+    response = client.models.generate_content(
+        model=model_name,
+        contents=contents,
+        config=config,
+    )
 
     return response.text or "Không thể xử lý yêu cầu."
-
