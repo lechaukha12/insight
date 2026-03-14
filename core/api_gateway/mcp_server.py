@@ -55,14 +55,14 @@ def get_system_metrics() -> list[dict]:
     return results
 
 
-def get_recent_events(severity: str = "", limit: int = 10) -> list[dict]:
+def get_recent_events(severity: str, limit: int) -> list[dict]:
     """Get recent monitoring events from the last 24 hours.
     Args:
-        severity: Filter by severity level (critical, warning, info). Empty for all.
-        limit: Maximum number of events to return (default 10, max 20).
+        severity: Filter by severity level (critical, warning, info). Use empty string for all.
+        limit: Maximum number of events to return. Use 10 for default, max 20.
     Returns a list of event objects with title, severity, source, and timestamp."""
     from shared.database.db import get_events
-    limit = min(limit, 20)
+    limit = min(limit or 10, 20)
     events = get_events(level=severity or None, limit=limit) or []
     return [
         {
@@ -76,13 +76,13 @@ def get_recent_events(severity: str = "", limit: int = 10) -> list[dict]:
     ]
 
 
-def get_error_logs(limit: int = 10) -> list[dict]:
+def get_error_logs(limit: int) -> list[dict]:
     """Get recent error-level logs from all sources.
     Args:
-        limit: Maximum number of logs to return (default 10, max 20).
+        limit: Maximum number of logs to return. Use 10 for default, max 20.
     Returns a list of log entries with source, message, severity, and timestamp."""
     from shared.database.db import get_logs
-    limit = min(limit, 20)
+    limit = min(limit or 10, 20)
     logs = get_logs(log_level="error", limit=limit) or []
     return [
         {
@@ -95,13 +95,13 @@ def get_error_logs(limit: int = 10) -> list[dict]:
     ]
 
 
-def get_trace_overview(last_hours: int = 24) -> dict:
+def get_trace_overview(last_hours: int) -> dict:
     """Get distributed tracing summary including total spans, error spans, and per-service breakdown.
     Args:
-        last_hours: Look back period in hours (default 24, max 168).
+        last_hours: Look back period in hours. Use 24 for default, max 168.
     Returns a summary with total_spans, error_spans, and a services list with span counts and average duration."""
     from shared.database.db import get_trace_summary
-    last_hours = min(last_hours, 168)
+    last_hours = min(last_hours or 24, 168)
     summary = get_trace_summary(last_hours=last_hours) or {}
     services = []
     for svc in (summary.get("services", []) or [])[:15]:
