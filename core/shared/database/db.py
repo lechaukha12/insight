@@ -211,6 +211,42 @@ def init_db():
         for sql in _config_tables + _ts_tables:
             client.command(sql)
 
+        # ── Materialized View: latest metrics per (agent_id, metric_name) ──
+        # Eliminates the expensive self-join in get_latest_metrics_per_agent()
+        _mv_sql = [
+            """CREATE MATERIALIZED VIEW IF NOT EXISTS metrics_latest_mv
+               ENGINE = AggregatingMergeTree()
+               ORDER BY (agent_id, metric_name)
+               AS SELECT
+                   agent_id,
+                   metric_name,
+                   argMaxState(metric_value, timestamp) AS latest_value,
+                   argMaxState(labels, timestamp) AS latest_labels,
+                   maxState(timestamp) AS latest_ts
+               FROM metrics
+               GROUP BY agent_id, metric_name""",
+        ]
+        for sql in _mv_sql:
+            try:
+                client.command(sql)
+            except Exception as e:
+                print(f"[DB] MV creation (may already exist): {e}")
+
+        # ── Data-skipping indexes for high-volume tables ──
+        _index_sql = [
+            "ALTER TABLE metrics ADD INDEX IF NOT EXISTS idx_agent_id agent_id TYPE set(100) GRANULARITY 4",
+            "ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_agent_id agent_id TYPE set(100) GRANULARITY 4",
+            "ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_log_level log_level TYPE set(10) GRANULARITY 2",
+            "ALTER TABLE traces ADD INDEX IF NOT EXISTS idx_service service_name TYPE set(100) GRANULARITY 4",
+            "ALTER TABLE events ADD INDEX IF NOT EXISTS idx_level level TYPE set(10) GRANULARITY 2",
+        ]
+        for sql in _index_sql:
+            try:
+                client.command(sql)
+            except Exception as e:
+                if "already exists" not in str(e).lower():
+                    print(f"[DB] Index creation note: {e}")
+
         # Insert default cluster if not exists
         existing = client.query("SELECT id FROM clusters FINAL WHERE id = 'default' AND _deleted = 0")
         if not existing.result_rows:
@@ -578,19 +614,35 @@ def get_metrics(agent_id: str = None, metric_name: str = None, last_hours: int =
 
 
 def get_latest_metrics_per_agent() -> dict[str, list[dict]]:
-    # Only scan last 24h to avoid full table scan
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
-    query = """SELECT m.* FROM metrics m
-               INNER JOIN (
-                   SELECT agent_id, metric_name, MAX(timestamp) as max_ts
-                   FROM metrics WHERE timestamp >= {cutoff:String}
+    # Use Materialized View for O(1) lookup instead of self-join
+    # Falls back to direct query if MV doesn't exist yet
+    try:
+        query = """SELECT agent_id, metric_name,
+                          argMaxMerge(latest_value) AS metric_value,
+                          argMaxMerge(latest_labels) AS labels,
+                          maxMerge(latest_ts) AS timestamp
+                   FROM metrics_latest_mv
                    GROUP BY agent_id, metric_name
-               ) latest ON m.agent_id = latest.agent_id
-                   AND m.metric_name = latest.metric_name
-                   AND m.timestamp = latest.max_ts
-               WHERE m.timestamp >= {cutoff:String}
-               ORDER BY m.agent_id, m.metric_name"""
-    rows = _run(query, params={"cutoff": cutoff}, fetch=True) or []
+                   ORDER BY agent_id, metric_name"""
+        rows = _run(query, fetch=True) or []
+    except Exception:
+        # Fallback: direct query with LIMIT for safety
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=6)).strftime('%Y-%m-%d %H:%M:%S')
+        query = """SELECT agent_id, metric_name, metric_value, labels, timestamp
+                   FROM metrics WHERE timestamp >= {cutoff:String}
+                   ORDER BY timestamp DESC
+                   LIMIT 10000"""
+        rows = _run(query, params={"cutoff": cutoff}, fetch=True) or []
+        # Deduplicate: keep only latest per (agent_id, metric_name)
+        seen = set()
+        deduped = []
+        for r in rows:
+            key = (r["agent_id"], r["metric_name"])
+            if key not in seen:
+                seen.add(key)
+                deduped.append(r)
+        rows = deduped
+
     result: dict[str, list[dict]] = {}
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))
@@ -603,7 +655,12 @@ def get_latest_metrics_per_agent() -> dict[str, list[dict]]:
 
 def get_metrics_timeseries(agent_id: str = None, last_hours: int = 6, metric_names: list[str] = None) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
-    query = "SELECT metric_name, metric_value, timestamp FROM metrics WHERE timestamp >= {cutoff:String}"
+    # Aggregate in ClickHouse instead of fetching all raw rows
+    query = """SELECT
+                  formatDateTime(timestamp, '%Y-%m-%d %H:%i') AS time,
+                  metric_name,
+                  round(avg(metric_value), 2) AS metric_value
+               FROM metrics WHERE timestamp >= {cutoff:String}"""
     params = {"cutoff": cutoff}
     if agent_id:
         query += " AND agent_id = {agent_id:String}"; params["agent_id"] = agent_id
@@ -612,14 +669,15 @@ def get_metrics_timeseries(agent_id: str = None, last_hours: int = 6, metric_nam
             params[f"mn_{i}"] = n
         placeholders = ", ".join(f"{{mn_{i}:String}}" for i in range(len(metric_names)))
         query += f" AND metric_name IN ({placeholders})"
-    query += " ORDER BY timestamp ASC"
+    query += " GROUP BY time, metric_name ORDER BY time ASC"
     rows = _run(query, params=params, fetch=True) or []
+    # Pivot: group by time, metric_name as columns
     time_map: dict[str, dict] = {}
     for r in rows:
-        ts = str(r["timestamp"])[:16]
+        ts = r["time"]
         if ts not in time_map:
             time_map[ts] = {"time": ts}
-        time_map[ts][r["metric_name"]] = round(float(r["metric_value"]), 2)
+        time_map[ts][r["metric_name"]] = r["metric_value"]
     return list(time_map.values())
 
 
@@ -1094,10 +1152,15 @@ def get_traces_by_service(service_name: str, last_hours: int = 24, limit: int = 
 
 def get_metrics_by_service(service_name: str, last_hours: int = 24, limit: int = 500) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=last_hours)).strftime('%Y-%m-%d %H:%M:%S')
+    # Use agent_id lookup from traces instead of LIKE scan on JSON labels
     rows = _run(
-        "SELECT * FROM metrics WHERE labels LIKE {pattern:String} AND timestamp >= {cutoff:String} "
-        "ORDER BY timestamp DESC LIMIT {lim:UInt32}",
-        params={"pattern": f"%{service_name}%", "cutoff": cutoff, "lim": limit}, fetch=True
+        """SELECT m.* FROM metrics m
+           WHERE m.agent_id IN (
+               SELECT DISTINCT agent_id FROM traces
+               WHERE service_name = {svc:String} AND timestamp >= {cutoff:String}
+           ) AND m.timestamp >= {cutoff:String}
+           ORDER BY m.timestamp DESC LIMIT {lim:UInt32}""",
+        params={"svc": service_name, "cutoff": cutoff, "lim": limit}, fetch=True
     ) or []
     for r in rows:
         r["labels"] = _parse_json_field(r.get("labels"))

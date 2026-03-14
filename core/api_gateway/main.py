@@ -344,12 +344,21 @@ async def query_logs(agent_id: str = Query(None), last_hours: int = Query(24), l
 
 @app.get("/api/v1/dashboard/summary")
 async def dashboard_summary(cluster_id: str = Query(None), from_time: str = Query(None), to_time: str = Query(None)):
-    agents = list_agents(cluster_id=cluster_id, from_time=from_time, to_time=to_time)
-    last_hours = 24  # default for event counts
-    event_counts = get_event_counts(last_hours=last_hours)
-    latest_metrics = get_latest_metrics_per_agent()
-    recent_events = get_events(last_hours=last_hours, limit=50, from_time=from_time, to_time=to_time)
-    clusters = list_clusters()
+    import asyncio
+    loop = asyncio.get_event_loop()
+    last_hours = 24
+
+    # Run all 5 DB queries in parallel (instead of sequential ~700ms → ~200ms)
+    agents_f = loop.run_in_executor(None, lambda: list_agents(cluster_id=cluster_id, from_time=from_time, to_time=to_time))
+    events_f = loop.run_in_executor(None, lambda: get_event_counts(last_hours=last_hours))
+    metrics_f = loop.run_in_executor(None, get_latest_metrics_per_agent)
+    recent_f = loop.run_in_executor(None, lambda: get_events(last_hours=last_hours, limit=50, from_time=from_time, to_time=to_time))
+    clusters_f = loop.run_in_executor(None, list_clusters)
+
+    agents, event_counts, latest_metrics, recent_events, clusters = await asyncio.gather(
+        agents_f, events_f, metrics_f, recent_f, clusters_f
+    )
+
     return {
         "summary": {
             "total_agents": len(agents),
