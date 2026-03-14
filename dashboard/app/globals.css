@@ -816,14 +816,20 @@ a {
 
 @media (max-width: 768px) {
 
+  /* ─── Prevent horizontal scroll ─── */
+  html, body {
+    overflow-x: hidden;
+    width: 100%;
+  }
+
   /* ─── Mobile Hamburger Button ─── */
   .mobile-menu-btn {
     position: fixed;
-    top: 12px;
-    left: 12px;
+    top: 10px;
+    left: 10px;
     z-index: 500;
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
     background: var(--bg-card);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
@@ -838,51 +844,44 @@ a {
 
   .mobile-menu-btn span {
     display: block;
-    width: 18px;
+    width: 16px;
     height: 2px;
     background: var(--blue);
     border-radius: 2px;
-    transition: var(--transition);
   }
 
   /* ─── Sidebar Mobile Overlay ─── */
   .sidebar-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.45);
     z-index: 999;
     backdrop-filter: blur(4px);
-    animation: fadeIn 0.2s ease;
-  }
-
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
   }
 
   .sidebar {
     transform: translateX(-100%);
     transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     z-index: 1000;
-    width: 280px;
+    width: 270px;
   }
 
   .sidebar.sidebar-open {
     transform: translateX(0);
-    box-shadow: 8px 0 40px rgba(0, 0, 0, 0.3);
+    box-shadow: 8px 0 40px rgba(0, 0, 0, 0.25);
   }
 
   .sidebar-close-btn {
     position: absolute;
-    top: 12px;
-    right: 12px;
-    width: 32px;
-    height: 32px;
+    top: 10px;
+    right: 10px;
+    width: 28px;
+    height: 28px;
     background: rgba(1, 101, 167, 0.08);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius-sm);
+    border-radius: 6px;
     color: var(--text-secondary);
-    font-size: 16px;
+    font-size: 14px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -890,160 +889,212 @@ a {
     z-index: 10;
   }
 
-  /* ─── Main Content (no sidebar margin) ─── */
+  /* ─── Main Content ─── */
   .main-content {
     margin-left: 0;
+    width: 100%;
   }
 
-  /* ─── Header Mobile ─── */
+  /* ─── Header ─── */
   .main-header {
-    padding: 12px 16px;
-    padding-left: 56px; /* room for hamburger */
-    padding-right: 16px;
-    flex-wrap: wrap;
-    gap: 8px;
+    padding: 10px 12px 10px 52px;
+    padding-right: 12px;
+    gap: 6px;
   }
 
   .main-header h2 {
-    font-size: 17px;
+    font-size: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  /* ─── Time Range Picker (relative flow) ─── */
+  /* ─── Time Range Picker — compact on mobile ─── */
   .trp-overlay {
     position: fixed;
-    top: 8px;
-    right: 8px;
+    top: 6px;
+    right: 6px;
     z-index: 300;
+  }
+
+  /* Hide the time range text on mobile (too long) */
+  .trp-time {
+    display: none !important;
   }
 
   /* ─── Main Body ─── */
   .main-body {
-    padding: 12px;
+    padding: 10px;
   }
 
-  /* ─── Stats Grid (2 cols on mobile) ─── */
+  /* ════════════════════════════════════════════════
+     STAT CARDS — compact 2-col, vertical layout
+     ════════════════════════════════════════════════ */
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-    margin-bottom: 16px;
+    gap: 8px;
+    margin-bottom: 12px;
   }
 
   .stat-card {
-    padding: 14px;
-    gap: 10px;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 12px;
+    gap: 6px;
+    min-width: 0;
   }
 
   .stat-icon {
-    width: 40px;
-    height: 40px;
-    font-size: 14px;
-    border-radius: var(--radius-sm);
+    width: 32px;
+    height: 32px;
+    font-size: 11px;
+    border-radius: 8px;
+  }
+
+  .stat-info {
+    min-width: 0;
+    width: 100%;
   }
 
   .stat-value {
-    font-size: 22px;
+    font-size: 24px;
+    line-height: 1.1;
   }
 
   .stat-label {
     font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  /* ─── Grids ─── */
+  .stat-trend {
+    font-size: 10px;
+  }
+
+  /* ════════════════════════════════════════════════
+     GRID LAYOUT — single column on mobile
+     ════════════════════════════════════════════════ */
   .grid-2,
   .grid-3 {
-    grid-template-columns: 1fr;
-    gap: 12px;
+    grid-template-columns: 1fr !important;
+    gap: 10px;
   }
 
-  /* ─── Cards ─── */
+  /* ════════════════════════════════════════════════
+     CARDS — compact
+     ════════════════════════════════════════════════ */
   .card {
-    padding: 16px;
+    padding: 12px;
     border-radius: var(--radius);
   }
 
   .card-header {
-    margin-bottom: 14px;
-    padding-bottom: 12px;
+    margin-bottom: 10px;
+    padding-bottom: 10px;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
   }
 
   .card-title {
     font-size: 14px;
   }
 
-  /* ─── Tables — horizontal scroll ─── */
+  .card-subtitle {
+    font-size: 11px;
+  }
+
+  /* ════════════════════════════════════════════════
+     TABLES — horizontal scroll
+     ════════════════════════════════════════════════ */
   .data-table {
     display: block;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
-    white-space: nowrap;
   }
 
   .data-table th {
-    padding: 10px 12px;
+    padding: 8px 10px;
     font-size: 10px;
+    white-space: nowrap;
   }
 
   .data-table td {
-    padding: 10px 12px;
-    font-size: 13px;
+    padding: 8px 10px;
+    font-size: 12px;
+    white-space: nowrap;
   }
 
-  /* ─── Buttons ─── */
+  /* ════════════════════════════════════════════════
+     BUTTONS
+     ════════════════════════════════════════════════ */
   .btn {
-    padding: 8px 16px;
-    font-size: 13px;
+    padding: 8px 14px;
+    font-size: 12px;
   }
 
   .btn-sm {
-    padding: 5px 10px;
+    padding: 4px 10px;
     font-size: 11px;
   }
 
-  /* ─── Events ─── */
+  /* ════════════════════════════════════════════════
+     EVENTS
+     ════════════════════════════════════════════════ */
   .event-item {
-    padding: 12px 14px;
-    gap: 10px;
+    padding: 10px 12px;
+    gap: 8px;
+    flex-wrap: wrap;
   }
 
   .event-icon {
-    width: 32px;
-    height: 32px;
-    font-size: 11px;
+    width: 28px;
+    height: 28px;
+    font-size: 10px;
   }
 
   .event-title {
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .event-message {
-    font-size: 12px;
+    font-size: 11px;
     -webkit-line-clamp: 1;
+    line-clamp: 1;
   }
 
   .event-time {
     font-size: 10px;
+    width: 100%;
+    text-align: right;
   }
 
-  /* ─── Agent Grid ─── */
+  /* ════════════════════════════════════════════════
+     AGENTS
+     ════════════════════════════════════════════════ */
   .agent-grid {
-    grid-template-columns: 1fr;
-    padding: 10px;
-    gap: 10px;
+    grid-template-columns: 1fr !important;
+    padding: 8px;
+    gap: 8px;
   }
 
   .agent-card {
-    padding: 14px;
+    padding: 12px;
   }
 
   .agent-card-name {
-    font-size: 14px;
+    font-size: 13px;
   }
 
-  /* ─── Cluster Group ─── */
+  .agent-card-info {
+    font-size: 12px;
+  }
+
+  /* ════════════════════════════════════════════════
+     CLUSTER
+     ════════════════════════════════════════════════ */
   .cluster-group-header {
-    padding: 10px 12px;
+    padding: 8px 12px;
     flex-wrap: wrap;
     gap: 6px;
   }
@@ -1052,17 +1103,39 @@ a {
     font-size: 13px;
   }
 
-  /* ─── Forms ─── */
-  .form-input {
-    font-size: 16px; /* prevents iOS zoom on focus */
-    padding: 12px 14px;
+  .cluster-selector {
+    font-size: 12px;
+    padding: 6px 10px;
   }
 
-  /* ─── Login ─── */
+  /* ════════════════════════════════════════════════
+     FORMS — prevent iOS zoom
+     ════════════════════════════════════════════════ */
+  .form-input,
+  input[type="text"],
+  input[type="password"],
+  input[type="email"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+
+  .form-group {
+    margin-bottom: 12px;
+  }
+
+  /* ════════════════════════════════════════════════
+     LOGIN — full width on mobile
+     ════════════════════════════════════════════════ */
+  .login-page {
+    padding: 16px;
+  }
+
   .login-card {
     max-width: 100%;
-    padding: 28px 20px;
-    margin: 0 12px;
+    padding: 24px 20px;
   }
 
   .login-title {
@@ -1070,60 +1143,139 @@ a {
     letter-spacing: 2px;
   }
 
-  /* ─── Empty State ─── */
+  .login-logo {
+    width: 60px;
+    height: 60px;
+  }
+
+  /* ════════════════════════════════════════════════
+     EMPTY & LOADING STATES
+     ════════════════════════════════════════════════ */
   .empty-state {
-    padding: 40px 16px;
+    padding: 32px 16px;
   }
 
   .empty-state-icon {
-    font-size: 36px;
+    font-size: 32px;
   }
 
   .empty-state-text {
-    font-size: 14px;
+    font-size: 13px;
   }
 
-  /* ─── Loading ─── */
   .loading-overlay {
-    padding: 50px 0;
+    padding: 40px 0;
   }
 
-  /* ─── Header Actions ─── */
+  /* ════════════════════════════════════════════════
+     HEADER ACTIONS
+     ════════════════════════════════════════════════ */
   .header-actions {
-    gap: 6px;
+    gap: 4px;
     flex-wrap: wrap;
   }
 
-  /* ─── Sidebar Footer ─── */
+  /* ════════════════════════════════════════════════
+     BADGES — smaller on mobile
+     ════════════════════════════════════════════════ */
+  .badge {
+    padding: 3px 8px;
+    font-size: 10px;
+  }
+
+  .badge-dot {
+    width: 5px;
+    height: 5px;
+  }
+
+  /* ════════════════════════════════════════════════
+     SIDEBAR FOOTER
+     ════════════════════════════════════════════════ */
   .sidebar-footer {
-    padding: 14px 16px;
+    padding: 12px 16px;
   }
 
-  /* ─── Inline style overrides for common patterns ─── */
-  /* Settings, detail pages use inline grid styles */
-  [style*="grid-template-columns: repeat(3"] {
+  .sidebar-user-name {
+    font-size: 12px;
+  }
+
+  .sidebar-user-role {
+    font-size: 10px;
+  }
+
+  /* ════════════════════════════════════════════════
+     TOGGLE — slightly smaller
+     ════════════════════════════════════════════════ */
+  .toggle {
+    width: 42px;
+    height: 24px;
+  }
+
+  .toggle-slider::before {
+    width: 18px;
+    height: 18px;
+  }
+
+  .toggle input:checked+.toggle-slider::before {
+    transform: translateX(18px);
+  }
+
+  /* ════════════════════════════════════════════════
+     WS INDICATOR
+     ════════════════════════════════════════════════ */
+  .ws-indicator {
+    font-size: 9px;
+    padding: 2px 8px;
+  }
+
+  /* ════════════════════════════════════════════════
+     INLINE STYLE OVERRIDES
+     These override inline grid styles used in pages
+     ════════════════════════════════════════════════ */
+  [style*="gridTemplateColumns"],
+  [style*="grid-template-columns"] {
     grid-template-columns: 1fr !important;
+    gap: 8px !important;
   }
 
-  [style*="grid-template-columns: repeat(4"] {
+  /* Keep 2-col for small stat-like grids */
+  [style*="minmax(180px"],
+  [style*="minmax(160px"],
+  [style*="minmax(150px"] {
     grid-template-columns: repeat(2, 1fr) !important;
   }
 
-  [style*="grid-template-columns: 1fr 1fr 1fr"] {
-    grid-template-columns: 1fr !important;
-  }
-
-  [style*="gridTemplateColumns"] {
-    gap: 10px !important;
-  }
-
-  /* ─── AI Chatbot (full screen on mobile) ─── */
+  /* ════════════════════════════════════════════════
+     AI CHATBOT — near full screen on mobile
+     ════════════════════════════════════════════════ */
   .ai-chat-window {
     width: calc(100vw - 16px) !important;
-    height: calc(100vh - 80px) !important;
+    height: calc(100vh - 60px) !important;
     right: 8px !important;
     bottom: 8px !important;
-    border-radius: 16px !important;
+    left: 8px !important;
+    border-radius: 14px !important;
+    max-width: none !important;
+  }
+
+  /* Robot icon — smaller on mobile */
+  .ai-robot-btn {
+    width: 48px !important;
+    height: 48px !important;
+    right: 12px !important;
+    bottom: 12px !important;
+  }
+
+  .ai-robot-btn img {
+    width: 40px !important;
+    height: 40px !important;
+  }
+
+  /* ════════════════════════════════════════════════
+     RECHARTS — ensure responsive
+     ════════════════════════════════════════════════ */
+  .recharts-responsive-container {
+    min-height: 180px;
   }
 }
 
