@@ -1095,7 +1095,7 @@ async def test_gemini_connection(user: dict = Depends(require_role(["admin"]))):
         from google import genai
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash-preview-05-20",
             contents="Reply with exactly: OK"
         )
         return {"status": "connected", "response": response.text.strip()}
@@ -1184,13 +1184,25 @@ MONITORING DATA:
             contents.append({"role": h.get("role", "user"), "parts": [{"text": h.get("content", "")}]})
         contents.append({"role": "user", "parts": [{"text": user_message}]})
 
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=contents,
-            config={"system_instruction": system_prompt, "max_output_tokens": 2048, "temperature": 0.7},
-        )
-        reply = response.text
-        return {"reply": reply}
+        # Try models with fallback
+        models_to_try = ["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+        last_error = None
+        for model_name in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config={"system_instruction": system_prompt, "max_output_tokens": 2048, "temperature": 0.7},
+                )
+                reply = response.text
+                return {"reply": reply}
+            except Exception as model_err:
+                last_error = model_err
+                logger.warning(f"Model {model_name} failed: {model_err}, trying next...")
+                continue
+        raise HTTPException(500, f"AI error (all models failed): {str(last_error)}")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Gemini API error: {e}")
         raise HTTPException(500, f"AI error: {str(e)}")
