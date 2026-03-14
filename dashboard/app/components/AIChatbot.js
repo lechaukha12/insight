@@ -25,11 +25,11 @@ export default function AIChatbot() {
     const [loading, setLoading] = useState(false);
     const [position, setPosition] = useState({ x: -1, y: -1 });
     const [dragging, setDragging] = useState(false);
-    const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-    const [hasMoved, setHasMoved] = useState(false);
     const messagesEndRef = useRef(null);
     const chatRef = useRef(null);
     const botRef = useRef(null);
+    const hasMovedRef = useRef(false);
+    const dragOffsetRef = useRef({ x: 0, y: 0 });
 
     // Initialize position on mount
     useEffect(() => {
@@ -43,84 +43,65 @@ export default function AIChatbot() {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
-    // Drag handlers
+    // Drag handlers using refs to avoid stale closures
     const handleMouseDown = useCallback((e) => {
         if (e.target.closest('.ai-chat-window')) return;
-        setDragging(true);
-        setHasMoved(false);
         const rect = botRef.current?.getBoundingClientRect();
         if (rect) {
-            setDragOffset({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+            dragOffsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
         }
+        hasMovedRef.current = false;
+        setDragging(true);
         e.preventDefault();
     }, []);
 
-    const handleMouseMove = useCallback((e) => {
-        if (!dragging) return;
-        setHasMoved(true);
-        setPosition({
-            x: Math.max(0, Math.min(window.innerWidth - 70, e.clientX - dragOffset.x)),
-            y: Math.max(0, Math.min(window.innerHeight - 70, e.clientY - dragOffset.y)),
-        });
-    }, [dragging, dragOffset]);
-
-    const handleMouseUp = useCallback(() => {
-        if (dragging && !hasMoved) {
-            setIsOpen(prev => !prev);
-        }
-        setDragging(false);
-    }, [dragging, hasMoved]);
-
-    useEffect(() => {
-        if (dragging) {
-            window.addEventListener('mousemove', handleMouseMove);
-            window.addEventListener('mouseup', handleMouseUp);
-            return () => {
-                window.removeEventListener('mousemove', handleMouseMove);
-                window.removeEventListener('mouseup', handleMouseUp);
-            };
-        }
-    }, [dragging, handleMouseMove, handleMouseUp]);
-
-    // Touch handlers
     const handleTouchStart = useCallback((e) => {
         if (e.target.closest('.ai-chat-window')) return;
         const touch = e.touches[0];
-        setDragging(true);
-        setHasMoved(false);
         const rect = botRef.current?.getBoundingClientRect();
         if (rect) {
-            setDragOffset({ x: touch.clientX - rect.left, y: touch.clientY - rect.top });
+            dragOffsetRef.current = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
         }
+        hasMovedRef.current = false;
+        setDragging(true);
     }, []);
 
-    const handleTouchMove = useCallback((e) => {
-        if (!dragging) return;
-        setHasMoved(true);
-        const touch = e.touches[0];
-        setPosition({
-            x: Math.max(0, Math.min(window.innerWidth - 70, touch.clientX - dragOffset.x)),
-            y: Math.max(0, Math.min(window.innerHeight - 70, touch.clientY - dragOffset.y)),
-        });
-    }, [dragging, dragOffset]);
-
-    const handleTouchEnd = useCallback(() => {
-        if (dragging && !hasMoved) {
-            setIsOpen(prev => !prev);
-        }
-        setDragging(false);
-    }, [dragging, hasMoved]);
-
     useEffect(() => {
-        if (dragging) {
-            window.addEventListener('touchmove', handleTouchMove);
-            window.addEventListener('touchend', handleTouchEnd);
-            return () => {
-                window.removeEventListener('touchmove', handleTouchMove);
-                window.removeEventListener('touchend', handleTouchEnd);
-            };
-        }
-    }, [dragging, handleTouchMove, handleTouchEnd]);
+        if (!dragging) return;
+        const onMove = (e) => {
+            hasMovedRef.current = true;
+            const off = dragOffsetRef.current;
+            setPosition({
+                x: Math.max(0, Math.min(window.innerWidth - 70, e.clientX - off.x)),
+                y: Math.max(0, Math.min(window.innerHeight - 70, e.clientY - off.y)),
+            });
+        };
+        const onTouchMove = (e) => {
+            hasMovedRef.current = true;
+            const touch = e.touches[0];
+            const off = dragOffsetRef.current;
+            setPosition({
+                x: Math.max(0, Math.min(window.innerWidth - 70, touch.clientX - off.x)),
+                y: Math.max(0, Math.min(window.innerHeight - 70, touch.clientY - off.y)),
+            });
+        };
+        const onEnd = () => {
+            setDragging(false);
+            if (!hasMovedRef.current) {
+                setIsOpen(prev => !prev);
+            }
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onEnd);
+        window.addEventListener('touchmove', onTouchMove);
+        window.addEventListener('touchend', onEnd);
+        return () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onEnd);
+            window.removeEventListener('touchmove', onTouchMove);
+            window.removeEventListener('touchend', onEnd);
+        };
+    }, [dragging]);
 
     // Send message
     const sendMessage = async () => {
@@ -162,7 +143,6 @@ export default function AIChatbot() {
                 ref={botRef}
                 onMouseDown={handleMouseDown}
                 onTouchStart={handleTouchStart}
-                onClick={() => { if (!hasMoved) setIsOpen(prev => !prev); }}
                 style={{
                     position: 'fixed',
                     left: position.x,
@@ -170,7 +150,7 @@ export default function AIChatbot() {
                     width: 60,
                     height: 60,
                     borderRadius: '50%',
-                    cursor: dragging ? 'grabbing' : 'grab',
+                    cursor: dragging ? 'grabbing' : 'pointer',
                     zIndex: 10000,
                     userSelect: 'none',
                     transition: dragging ? 'none' : 'box-shadow 0.3s ease',
