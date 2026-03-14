@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { AuthProvider, useAuth } from './AuthProvider';
 import { TimeRangeProvider } from '../lib/TimeRangeContext';
@@ -11,6 +12,7 @@ function AppShell({ children }) {
     const pathname = usePathname();
     const { isAuthenticated, loading } = useAuth();
     const isLoginPage = pathname === '/login';
+    const [sidebarOpen, setSidebarOpen] = useState(false);
 
     // Show loading while checking auth
     if (loading) {
@@ -33,7 +35,24 @@ function AppShell({ children }) {
     // Authenticated: show sidebar + content with time picker overlay in header
     return (
         <div className="app-layout">
-            <Sidebar />
+            {/* Mobile hamburger button */}
+            <button
+                className="mobile-menu-btn"
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Menu"
+            >
+                <span /><span /><span />
+            </button>
+
+            {/* Backdrop overlay for mobile sidebar */}
+            {sidebarOpen && (
+                <div
+                    className="sidebar-backdrop"
+                    onClick={() => setSidebarOpen(false)}
+                />
+            )}
+
+            <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
             <main className="main-content">
                 <div className="trp-overlay">
                     <TimeRangePicker />
