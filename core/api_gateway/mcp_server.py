@@ -183,6 +183,7 @@ async def chat(api_key: str, model_name: str, user_message: str, history: list[d
         tools=MCP_TOOLS,
         temperature=0.7,
         max_output_tokens=2048,
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
 
     # Manual function calling loop (max 5 rounds)
