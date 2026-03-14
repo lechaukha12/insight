@@ -109,50 +109,50 @@ helm install insight-k8s-agent insight/k8s-agent \\
   --set coreUrl="${base}"`;
     }
     if (type === 'application') {
-        if (platform === 'java') return `# Java / Spring Boot — Add to application.properties
-otel.exporter.otlp.endpoint=${base}
-otel.exporter.otlp.headers=X-Agent-Token=${token}
-otel.service.name=your-service-name
+        if (platform === 'java') return `# Java / Spring Boot — OpenTelemetry Auto-Instrumentation
+# Download OTel Java Agent:
+# https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases
 
-# Run with OpenTelemetry Java Agent
+# Run your app with:
 java -javaagent:opentelemetry-javaagent.jar \\
-  -Dotel.exporter.otlp.endpoint=${base}/v1/traces \\
-  -Dotel.exporter.otlp.headers="X-Agent-Token=${token}" \\
+  -Dotel.exporter.otlp.endpoint=${base} \\
+  -Dotel.exporter.otlp.protocol=http/json \\
   -Dotel.service.name=your-service-name \\
   -jar your-app.jar`;
-        if (platform === 'python') return `# Python / FastAPI
-pip install opentelemetry-sdk opentelemetry-exporter-otlp
+        if (platform === 'python') return `# Python — OpenTelemetry Auto-Instrumentation
+pip install opentelemetry-distro opentelemetry-exporter-otlp
 
-# Set environment variables
+# Set environment variables:
 export OTEL_EXPORTER_OTLP_ENDPOINT=${base}
-export OTEL_EXPORTER_OTLP_HEADERS="X-Agent-Token=${token}"
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 export OTEL_SERVICE_NAME=your-service-name
 
-# Run
+# Run your app:
 opentelemetry-instrument python your-app.py`;
-        if (platform === 'nodejs') return `# Node.js
-npm install @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http
+        if (platform === 'nodejs') return `# Node.js — OpenTelemetry Auto-Instrumentation
+npm install @opentelemetry/auto-instrumentations-node \\
+  @opentelemetry/sdk-node @opentelemetry/exporter-trace-otlp-http
 
-# Set environment variables
+# Set environment variables:
 export OTEL_EXPORTER_OTLP_ENDPOINT=${base}
-export OTEL_EXPORTER_OTLP_HEADERS="X-Agent-Token=${token}"
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 export OTEL_SERVICE_NAME=your-service-name
 
-# Run with auto-instrumentation
-node --require @opentelemetry/auto-instrumentations-node your-app.js`;
-        if (platform === 'docker') return `# Docker Compose — Insight OTel Collector
+# Run your app:
+node --require @opentelemetry/auto-instrumentations-node/register your-app.js`;
+        if (platform === 'docker') return `# Docker Compose — Add OTel environment to your service
 services:
-  insight-collector:
-    image: lechaukha12/insight-otel-agent:latest
+  your-app:
+    image: your-app-image
     environment:
-      - AGENT_TOKEN=${token}
-      - INSIGHT_CORE_URL=${base}
-      - AGENT_TYPE=collector
-    ports:
-      - "4317:4317"  # gRPC
-      - "4318:4318"  # HTTP`;
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${base}
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+      - OTEL_SERVICE_NAME=your-service-name
+
+# Note: Your app must have OpenTelemetry SDK installed.
+# Traces, metrics, and logs will be sent directly to Insight Core.`;
     }
-    return `# Configure your agent with:\n# Token: ${token}\n# Core URL: ${base}`;
+    return `# Configure OpenTelemetry in your app:\n# OTEL_EXPORTER_OTLP_ENDPOINT=${base}\n# OTEL_SERVICE_NAME=your-service-name`;
 }
 
 export default function InstallAgentPage() {
@@ -221,7 +221,8 @@ export default function InstallAgentPage() {
     };
 
     const typeInfo = AGENT_TYPES.find(t => t.key === agentType);
-    const installCmd = agentType && platform && token ? getInstallCommand(agentType, platform, token, coreUrl) : '';
+    const isOtel = agentType === 'application';
+    const installCmd = agentType && platform && (isOtel || token) ? getInstallCommand(agentType, platform, token, coreUrl) : '';
 
     return (
         <>
@@ -304,7 +305,7 @@ export default function InstallAgentPage() {
                                 </div>
                             ))}
                         </div>
-                        {platform && (
+                        {platform && !isOtel && (
                             <div style={{ marginTop: 24 }}>
                                 <label style={{ display: 'block', fontWeight: 600, fontSize: 13, marginBottom: 6, color: 'var(--text-secondary)' }}>Token Name (optional)</label>
                                 <div style={{ display: 'flex', gap: 12 }}>
@@ -317,11 +318,18 @@ export default function InstallAgentPage() {
                                 </div>
                             </div>
                         )}
+                        {platform && isOtel && (
+                            <div style={{ marginTop: 24, textAlign: 'right' }}>
+                                <button className="btn btn-primary" onClick={() => setStep(3)}>
+                                    View Setup Instructions
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
 
                 {/* Step 3: Install Command */}
-                {step === 3 && token && (
+                {step === 3 && (isOtel || token) && (
                     <div className="card" style={{ marginBottom: 24 }}>
                         <div className="card-header">
                             <div>
@@ -331,11 +339,19 @@ export default function InstallAgentPage() {
                             <button className="btn btn-secondary btn-sm" onClick={() => setStep(2)}>Back</button>
                         </div>
 
-                        {/* Token display */}
+                        {/* Token display (only for non-OTel agents) */}
+                        {token && !isOtel && (
                         <div style={{ padding: 16, background: 'rgba(1,101,167,0.06)', borderRadius: 'var(--radius-sm)', marginBottom: 16 }}>
                             <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4 }}>Your Agent Token (save this — it won't be shown again)</div>
                             <div style={{ fontFamily: 'monospace', fontSize: 13, wordBreak: 'break-all', color: 'var(--blue)', fontWeight: 600 }}>{token}</div>
                         </div>
+                        )}
+                        {isOtel && (
+                        <div style={{ padding: 16, background: 'rgba(16,185,129,0.06)', borderRadius: 'var(--radius-sm)', marginBottom: 16, border: '1px solid rgba(16,185,129,0.15)' }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-success)', marginBottom: 4 }}>No token required</div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>OpenTelemetry apps send data directly to Insight Core. Just set the environment variables below.</div>
+                        </div>
+                        )}
 
                         {/* Install command */}
                         <div style={{ position: 'relative' }}>

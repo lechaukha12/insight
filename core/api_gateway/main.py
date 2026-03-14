@@ -766,6 +766,145 @@ async def service_metrics(service_name: str, last_hours: int = Query(24), limit:
     metrics = get_metrics_by_service(service_name, last_hours=last_hours, limit=limit)
     return {"metrics": metrics, "total": len(metrics), "service": service_name}
 
+# ════════════════════════════════════════════════
+# OTLP HTTP JSON RECEIVER (OpenTelemetry Standard)
+# No auth required — apps just set OTEL_EXPORTER_OTLP_ENDPOINT
+# ════════════════════════════════════════════════
+
+def _otlp_get_attr(attributes: list, key: str) -> str | None:
+    """Extract an attribute value from OTLP attributes list."""
+    for attr in (attributes or []):
+        if attr.get("key") == key:
+            val = attr.get("value", {})
+            return val.get("stringValue") or val.get("intValue") or val.get("doubleValue") or str(val)
+    return None
+
+def _otlp_get_service_name(resource: dict) -> str:
+    """Extract service.name from OTLP resource."""
+    return _otlp_get_attr(resource.get("attributes", []), "service.name") or "unknown-service"
+
+def _otlp_ensure_agent(service_name: str):
+    """Auto-register an application agent from OTel service name."""
+    agent_id = f"otel-{service_name}"
+    get_or_create_agent(agent_id, service_name, "opentelemetry", "", "default", agent_category="application")
+    return agent_id
+
+@app.post("/v1/traces")
+async def otlp_receive_traces(request: Request):
+    """OTLP HTTP JSON trace receiver — standard OpenTelemetry endpoint."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=200, content={})
+    resource_spans = body.get("resourceSpans", [])
+    all_traces = []
+    for rs in resource_spans:
+        resource = rs.get("resource", {})
+        service_name = _otlp_get_service_name(resource)
+        agent_id = _otlp_ensure_agent(service_name)
+        for scope_span in rs.get("scopeSpans", []):
+            for span in scope_span.get("spans", []):
+                start_ns = int(span.get("startTimeUnixNano", 0))
+                end_ns = int(span.get("endTimeUnixNano", 0))
+                duration_ms = (end_ns - start_ns) / 1_000_000 if start_ns and end_ns else 0
+                status_code = span.get("status", {}).get("code", 0)
+                status = "error" if status_code == 2 else "ok"
+                attrs = {}
+                for a in span.get("attributes", []):
+                    val = a.get("value", {})
+                    attrs[a["key"]] = val.get("stringValue") or val.get("intValue") or val.get("doubleValue") or val.get("boolValue", "")
+                all_traces.append({
+                    "trace_id": span.get("traceId", ""),
+                    "span_id": span.get("spanId", ""),
+                    "span_name": span.get("name", ""),
+                    "service_name": service_name,
+                    "duration_ms": round(duration_ms, 2),
+                    "status": status,
+                    "attributes": attrs,
+                    "agent_id": agent_id,
+                })
+    if all_traces:
+        # Group by agent_id and insert
+        by_agent: dict[str, list] = {}
+        for t in all_traces:
+            aid = t.pop("agent_id")
+            by_agent.setdefault(aid, []).append(t)
+        for aid, traces in by_agent.items():
+            insert_traces(aid, traces)
+        logger.info(f"OTLP: Received {len(all_traces)} spans from {len(by_agent)} services")
+    return JSONResponse(status_code=200, content={})
+
+@app.post("/v1/metrics")
+async def otlp_receive_metrics(request: Request):
+    """OTLP HTTP JSON metrics receiver — standard OpenTelemetry endpoint."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=200, content={})
+    resource_metrics = body.get("resourceMetrics", [])
+    all_metrics: dict[str, list] = {}  # agent_id -> [{metric_name, metric_value, labels}]
+    for rm in resource_metrics:
+        resource = rm.get("resource", {})
+        service_name = _otlp_get_service_name(resource)
+        agent_id = _otlp_ensure_agent(service_name)
+        for scope_metric in rm.get("scopeMetrics", []):
+            for metric in scope_metric.get("metrics", []):
+                metric_name = metric.get("name", "")
+                # Handle different metric data types
+                data_points = []
+                for key in ("gauge", "sum", "histogram"):
+                    data_obj = metric.get(key, {})
+                    if data_obj:
+                        data_points = data_obj.get("dataPoints", [])
+                        break
+                for dp in data_points:
+                    value = dp.get("asDouble") or dp.get("asInt", 0)
+                    labels = {}
+                    for a in dp.get("attributes", []):
+                        val = a.get("value", {})
+                        labels[a["key"]] = val.get("stringValue") or val.get("intValue") or val.get("doubleValue", "")
+                    labels["service_name"] = service_name
+                    all_metrics.setdefault(agent_id, []).append({
+                        "metric_name": metric_name,
+                        "metric_value": float(value) if value else 0.0,
+                        "labels": labels,
+                    })
+    for agent_id, metrics in all_metrics.items():
+        insert_metrics(agent_id, metrics)
+        logger.info(f"OTLP: Received {len(metrics)} metrics from {agent_id}")
+    return JSONResponse(status_code=200, content={})
+
+@app.post("/v1/logs")
+async def otlp_receive_logs(request: Request):
+    """OTLP HTTP JSON logs receiver — standard OpenTelemetry endpoint."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=200, content={})
+    resource_logs = body.get("resourceLogs", [])
+    all_logs: dict[str, list] = {}  # agent_id -> [{log entries}]
+    for rl in resource_logs:
+        resource = rl.get("resource", {})
+        service_name = _otlp_get_service_name(resource)
+        agent_id = _otlp_ensure_agent(service_name)
+        for scope_log in rl.get("scopeLogs", []):
+            for log_record in scope_log.get("logRecords", []):
+                severity = log_record.get("severityText", "info").lower()
+                body_val = log_record.get("body", {})
+                message = body_val.get("stringValue", "") if isinstance(body_val, dict) else str(body_val)
+                all_logs.setdefault(agent_id, []).append({
+                    "log_level": severity if severity in ("debug", "info", "warning", "error", "critical") else "info",
+                    "message": message,
+                    "source": service_name,
+                    "namespace": "",
+                    "pod_name": "",
+                })
+    for agent_id, logs in all_logs.items():
+        insert_logs(agent_id, logs)
+        logger.info(f"OTLP: Received {len(logs)} logs from {agent_id}")
+    return JSONResponse(status_code=200, content={})
+
+
 @app.get("/api/v1/storage/stats", dependencies=[Depends(require_auth)])
 async def storage_stats():
     """Get storage statistics per table."""
