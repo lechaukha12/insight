@@ -268,3 +268,7 @@ export async function updateGeminiSettings(data) {
 export async function testGeminiConnection() {
     return fetchAPI('/api/v1/settings/gemini/test', { method: 'POST' });
 }
+
+export async function listGeminiModels() {
+    return fetchAPI('/api/v1/settings/gemini/models');
+}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { getAlertConfigs, createAlertConfig, deleteAlertConfig, getSettings, updateSettings, getStorageStats, applyRetention, purgeAllData, getAgentTokens, createAgentToken, revokeAgentToken, getGeminiSettings, updateGeminiSettings, testGeminiConnection } from '../lib/api';
+import { getAlertConfigs, createAlertConfig, deleteAlertConfig, getSettings, updateSettings, getStorageStats, applyRetention, purgeAllData, getAgentTokens, createAgentToken, revokeAgentToken, getGeminiSettings, updateGeminiSettings, testGeminiConnection, listGeminiModels } from '../lib/api';
 import { useAuth } from '../components/AuthProvider';
 
 const API_BASE = '';
@@ -57,6 +57,9 @@ export default function SettingsPage() {
     const [geminiSaving, setGeminiSaving] = useState(false);
     const [geminiMsg, setGeminiMsg] = useState(null);
     const [geminiTesting, setGeminiTesting] = useState(false);
+    const [geminiModel, setGeminiModel] = useState('gemini-2.0-flash');
+    const [availableModels, setAvailableModels] = useState([]);
+    const [modelsLoading, setModelsLoading] = useState(false);
 
     const { user } = useAuth();
 
@@ -81,7 +84,17 @@ export default function SettingsPage() {
             setGeminiKey(d.api_key || '');
             setGeminiEnabled(d.enabled || false);
             setGeminiHasKey(d.has_key || false);
+            setGeminiModel(d.model || 'gemini-2.0-flash');
         } catch (err) { console.error(err); }
+    }, []);
+
+    const fetchModels = useCallback(async () => {
+        setModelsLoading(true);
+        try {
+            const d = await listGeminiModels();
+            setAvailableModels(d.models || []);
+        } catch (err) { console.error(err); }
+        finally { setModelsLoading(false); }
     }, []);
 
     useEffect(() => { fetchData(); fetchWebhooks(); fetchTokens(); if (user?.role === 'admin') fetchGemini(); }, [fetchData, fetchWebhooks, fetchGemini, user]);
@@ -691,6 +704,40 @@ export default function SettingsPage() {
                                         Get your API key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)' }}>Google AI Studio</a>
                                     </div>
                                 </div>
+
+                                <div className="form-group" style={{ marginTop: 16 }}>
+                                    <label className="form-label">AI Model</label>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        <select
+                                            className="form-input"
+                                            value={geminiModel}
+                                            onChange={async (e) => {
+                                                const val = e.target.value;
+                                                setGeminiModel(val);
+                                                try {
+                                                    await updateGeminiSettings({ model: val });
+                                                    setGeminiMsg({ type: 'success', text: `Model changed to ${val}` });
+                                                } catch (err) { setGeminiMsg({ type: 'error', text: err.message }); }
+                                            }}
+                                            style={{ flex: 1 }}
+                                        >
+                                            {availableModels.length === 0 && <option value={geminiModel}>{geminiModel}</option>}
+                                            {availableModels.map(m => (
+                                                <option key={m.id} value={m.id}>{m.id}</option>
+                                            ))}
+                                        </select>
+                                        <button
+                                            className="btn btn-secondary"
+                                            disabled={modelsLoading || !geminiHasKey}
+                                            onClick={fetchModels}
+                                        >
+                                            {modelsLoading ? 'Loading...' : 'Load Models'}
+                                        </button>
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                                        Click &quot;Load Models&quot; to fetch available models from your API key
+                                    </div>
+                                </div>
                             </div>
 
                             <div className="card">
@@ -706,7 +753,7 @@ export default function SettingsPage() {
                                             {geminiEnabled ? 'Enabled' : 'Disabled'}
                                         </span>
                                     </div>
-                                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Model: Gemini 2.0 Flash</div>
+                                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Model: {geminiModel}</div>
                                 </div>
 
                                 <button

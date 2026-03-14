@@ -1068,10 +1068,12 @@ async def get_gemini_settings(user: dict = Depends(require_role(["admin"]))):
     """Get Gemini AI settings (admin only)."""
     api_key = get_setting("gemini_api_key", "")
     enabled = get_setting("gemini_enabled", False)
+    model = get_setting("gemini_model", "gemini-2.0-flash")
     return {
         "api_key": ("*" * 20 + api_key[-4:]) if api_key and len(api_key) > 4 else "",
         "enabled": enabled,
         "has_key": bool(api_key),
+        "model": model,
     }
 
 @app.put("/api/v1/settings/gemini")
@@ -1082,7 +1084,9 @@ async def update_gemini_settings(request: Request, user: dict = Depends(require_
         set_setting("gemini_api_key", body["api_key"])
     if "enabled" in body:
         set_setting("gemini_enabled", body["enabled"])
-    insert_audit_log(user["id"], user["username"], "update_gemini_settings", "settings", {"enabled": body.get("enabled")})
+    if "model" in body and body["model"]:
+        set_setting("gemini_model", body["model"])
+    insert_audit_log(user["id"], user["username"], "update_gemini_settings", "settings", {"enabled": body.get("enabled"), "model": body.get("model")})
     return {"status": "updated"}
 
 @app.post("/api/v1/settings/gemini/test")
@@ -1094,13 +1098,31 @@ async def test_gemini_connection(user: dict = Depends(require_role(["admin"]))):
     try:
         from google import genai
         client = genai.Client(api_key=api_key)
+        model = get_setting("gemini_model", "gemini-2.0-flash")
         response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-05-20",
+            model=model,
             contents="Reply with exactly: OK"
         )
-        return {"status": "connected", "response": response.text.strip()}
+        return {"status": "connected", "model": model, "response": response.text.strip()}
     except Exception as e:
         raise HTTPException(400, f"Connection failed: {str(e)}")
+
+@app.get("/api/v1/settings/gemini/models")
+async def list_gemini_models(user: dict = Depends(require_role(["admin"]))):
+    """List available Gemini models."""
+    api_key = get_setting("gemini_api_key", "")
+    if not api_key:
+        raise HTTPException(400, "Gemini API key not configured")
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+        models = []
+        for m in client.models.list():
+            if "generateContent" in (m.supported_actions or []):
+                models.append({"id": m.name.replace("models/", ""), "name": m.display_name or m.name})
+        return {"models": models}
+    except Exception as e:
+        raise HTTPException(400, f"Failed to list models: {str(e)}")
 
 @app.post("/api/v1/chat")
 async def ai_chat(request: Request, user: dict = Depends(require_role(["admin"]))):
@@ -1177,6 +1199,7 @@ MONITORING DATA:
     try:
         from google import genai
         client = genai.Client(api_key=api_key)
+        model = get_setting("gemini_model", "gemini-2.0-flash")
 
         # Build conversation
         contents = []
@@ -1184,23 +1207,13 @@ MONITORING DATA:
             contents.append({"role": h.get("role", "user"), "parts": [{"text": h.get("content", "")}]})
         contents.append({"role": "user", "parts": [{"text": user_message}]})
 
-        # Try models with fallback
-        models_to_try = ["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
-        last_error = None
-        for model_name in models_to_try:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=contents,
-                    config={"system_instruction": system_prompt, "max_output_tokens": 2048, "temperature": 0.7},
-                )
-                reply = response.text
-                return {"reply": reply}
-            except Exception as model_err:
-                last_error = model_err
-                logger.warning(f"Model {model_name} failed: {model_err}, trying next...")
-                continue
-        raise HTTPException(500, f"AI error (all models failed): {str(last_error)}")
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config={"system_instruction": system_prompt, "max_output_tokens": 2048, "temperature": 0.7},
+        )
+        reply = response.text
+        return {"reply": reply}
     except HTTPException:
         raise
     except Exception as e:
