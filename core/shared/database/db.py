@@ -838,7 +838,7 @@ def get_setting(key: str, default: Any = None) -> Any:
 
 
 def set_setting(key: str, value: Any):
-    serialized = json.dumps(value) if not isinstance(value, str) else value
+    serialized = json.dumps(value)
     _insert('settings', ['key', 'value', '_version', '_deleted', 'updated_at'],
             [[key, serialized, _version(), 0, _now()]])
 
