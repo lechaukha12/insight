@@ -1,14 +1,42 @@
 /**
  * Catch-all API proxy route handler.
- * Proxies all /api/* requests from the browser to the backend API server.
- * Uses BACKEND_URL env var at RUNTIME (not build time).
+ * Proxies all /api/* requests from the browser to the backend services.
+ *
+ * Smart routing (post-microservice split):
+ *   - Ingestion endpoints (metrics, events, logs, processes, heartbeat, traces)
+ *     → Data Collector (COLLECTOR_URL)
+ *   - All other endpoints (dashboard, auth, settings, chat, etc.)
+ *     → API Gateway (BACKEND_URL)
  */
 
-const BACKEND = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const BACKEND   = process.env.BACKEND_URL   || 'http://localhost:8080';
+const COLLECTOR = process.env.COLLECTOR_URL || process.env.BACKEND_URL || 'http://localhost:8081';
+
+// Ingestion path patterns → route to Data Collector
+const COLLECTOR_PATTERNS = [
+    /^\/api\/v1\/metrics(\/|$)/,
+    /^\/api\/v1\/events(\/|$)/,
+    /^\/api\/v1\/logs(\/|$)/,
+    /^\/api\/v1\/processes(\/|$)/,
+    /^\/api\/v1\/agents\/[^/]+\/heartbeat(\/|$)/,
+    /^\/v1\/traces(\/|$)/,           // OTLP traces
+];
+
+function getBackendUrl(apiPath) {
+    const fullPath = `/api/${apiPath}`;
+    for (const pattern of COLLECTOR_PATTERNS) {
+        if (pattern.test(fullPath)) {
+            return COLLECTOR;
+        }
+    }
+    return BACKEND;
+}
 
 async function handler(request, { params }) {
     const { path } = await params;
-    const target = `${BACKEND}/api/${path.join('/')}`;
+    const apiPath = path.join('/');
+    const backend = getBackendUrl(apiPath);
+    const target = `${backend}/api/${apiPath}`;
     const url = new URL(target);
 
     // Forward query params
